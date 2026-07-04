@@ -1,20 +1,21 @@
-# Ubuntu build package
+# Le'Sticky Notes — Ubuntu/Linux build package
 
-This package adapts the provided Windows PyInstaller setup to Ubuntu/Linux.
+This package updates the Linux build to match the current Windows build layout.
 
 ## Included
-- `sticky-notes-linux.spec` — Linux PyInstaller spec
+- `sticky_notes.py` — app source filename expected by the spec
 - `build-linux.sh` — Ubuntu build script
+- `build-linux.spec` — Linux PyInstaller spec
 - `requirements-linux.txt` — Python dependencies
-- `sticky_notes.py` — expected app source filename, to be replaced with your full source file before build if needed
+- `README-linux-build.md` — notes
 
-## Notes
-- The Windows build installs `pyinstaller`, `pystray`, and `pillow`.
-- The Windows spec bundles `icon.png` and `icon.ico`; Linux build only uses `icon.png` if present.
-- Windows-only metadata such as `version_info.txt` and `.ico` EXE icon handling are omitted on Linux.
-- The source uses Windows DPI calls through `ctypes.windll`; these should be guarded for non-Windows systems if they are not already inside try/except.
+## Ubuntu packages
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv python3-tk python3-dev
+```
 
-## Build on Ubuntu
+## Build
 ```bash
 bash build-linux.sh
 ```
@@ -23,3 +24,9 @@ bash build-linux.sh
 ```bash
 dist/LeStickyNotes/
 ```
+
+## Notes
+- Linux build uses `icon.png` if present.
+- Windows-only EXE metadata from `version_info.txt` and `.ico` EXE icon embedding are omitted on Linux.
+- The source contains Windows DPI calls via `ctypes.windll`, but they are wrapped in exception handling, so they should fail safely on Linux.
+- Tray support depends on the Linux desktop environment; GNOME may need extensions or AppIndicator compatibility for tray icons.

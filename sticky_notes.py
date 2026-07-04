@@ -296,7 +296,7 @@ class App:
         except Exception: pass
         T = self.T
         style.layout("LeSticky.Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-        style.configure("LeSticky.Vertical.TScrollbar", background=T["separator"], troughcolor=T["bg"], bordercolor=T["bg"], darkcolor=T["bg"], lightcolor=T["bg"], arrowcolor=T["bg"], relief="flat", borderwidth=0, arrowsize=1, width=7)
+        style.configure("LeSticky.Vertical.TScrollbar", background=T["separator"], troughcolor=T["bg"], bordercolor=T["bg"], darkcolor=T["bg"], lightcolor=T["bg"], arrowcolor=T["bg"], relief="flat", borderwidth=0, arrowsize=1, width=4)
         style.map("LeSticky.Vertical.TScrollbar", background=[("active", T["muted"]), ("!active", T["separator"])])
 
     def _build_ui(self):
@@ -349,6 +349,10 @@ class App:
             w.bind("<Button-4>", self._scroll)
             w.bind("<Button-5>", self._scroll)
             w.bind("<Control-MouseWheel>", self._ctrl_scroll)
+        # Bind scroll on root to always reach canvas
+        self.root.bind("<MouseWheel>", self._scroll, add="+")
+        self.root.bind("<Button-4>", self._scroll, add="+")
+        self.root.bind("<Button-5>", self._scroll, add="+")
 
         tk.Frame(self.main,bg=self.T["separator"],height=1).pack(fill="x")
         self.status_var = tk.StringVar()
@@ -359,10 +363,11 @@ class App:
 
     def _bind_ctrl_wheel_recursive(self, widget):
         for seq in ("<Control-MouseWheel>", "<Control-Button-4>", "<Control-Button-5>"):
-            try:
-                widget.bind(seq, self._ctrl_scroll, add="+")
-            except Exception:
-                pass
+            try: widget.bind(seq, self._ctrl_scroll, add="+")
+            except Exception: pass
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try: widget.bind(seq, self._scroll, add="+")
+            except Exception: pass
         for child in widget.winfo_children():
             self._bind_ctrl_wheel_recursive(child)
 
@@ -474,10 +479,21 @@ class App:
 
     def _update_scroll(self): self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     def _scroll(self, e):
-        d = -1 if getattr(e,'num',None)==4 else (1 if getattr(e,'num',None)==5 else int(-1*(e.delta/120)))
+        if getattr(e,'num',None)==4: d=-1
+        elif getattr(e,'num',None)==5: d=1
+        else:
+            delta = getattr(e,'delta',0)
+            d = -1 if delta>0 else (1 if delta<0 else 0)
+        if d == 0: return "break"
         top,_ = self.canvas.yview()
-        if d < 0 and top <= 0: return
+        if d < 0 and top <= 0:
+            self.canvas.yview_moveto(0.0)
+            return "break"
         self.canvas.yview_scroll(d,"units")
+        top,_ = self.canvas.yview()
+        if top < 0:
+            self.canvas.yview_moveto(0.0)
+        return "break"
     def _ctrl_scroll(self, e): self._set_scale(self.cfg.get("ui_scale",1.0) + (0.05 if ((getattr(e,"num",None)==4) or getattr(e,"delta",0)>0) else -0.05))
 
     def _active_tasks(self):
@@ -517,6 +533,9 @@ class App:
         else:
             for task in pool:
                 self._task_row(task, archived=(self.current_tab=="archive"), trashed=(self.current_tab=="trash"), searching=(self.current_tab=="search"))
+        # Bottom overscroll spacer
+        tk.Frame(self.task_frame, bg=self.T["bg"], height=60).pack(fill="x")
+        self._update_scroll()
         self._refresh_tabs()
         open_count = len([t for t in self.tasks if not t.get("deleted") and not t.get("done")])
         archive_count = len(self._archived_tasks())
