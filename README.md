@@ -1,4 +1,4 @@
-# 📝 Leo Note
+# 📝 Leo Note - Your Rapid Productivity!
 
 A **lightweight, standalone sticky notes / task app for Windows** with optional **Obsidian** integration.
 
