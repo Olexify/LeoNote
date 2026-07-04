@@ -38,7 +38,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='LeStickyNotes',
+    name='LeoNote',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

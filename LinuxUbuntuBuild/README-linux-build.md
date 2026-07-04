@@ -1,32 +1,22 @@
-# Le'Sticky Notes — Ubuntu/Linux build package
+# LeoNote — Ubuntu/Linux build package
 
-This package updates the Linux build to match the current Windows build layout.
+This updated package matches the latest LeoNote Python source and Windows spec naming.
 
 ## Included
-- `sticky_notes.py` — app source filename expected by the spec
-- `build-linux.sh` — Ubuntu build script
-- `build-linux.spec` — Linux PyInstaller spec
-- `requirements-linux.txt` — Python dependencies
-- `README-linux-build.md` — notes
+- sticky_notes.py
+- build-linux.spec
+- build-linux.sh
+- requirements-linux.txt
+- README-linux-build.md
 
-## Ubuntu packages
-```bash
-sudo apt update
-sudo apt install -y python3 python3-pip python3-venv python3-tk python3-dev
-```
-
-## Build
-```bash
-bash build-linux.sh
-```
-
-## Output
-```bash
-dist/LeStickyNotes/
-```
+## Build on Ubuntu
+1. Put `icon.png` in this folder if desired.
+2. Run `bash build-linux.sh`
+3. Output: `dist/LeoNote/`
 
 ## Notes
-- Linux build uses `icon.png` if present.
-- Windows-only EXE metadata from `version_info.txt` and `.ico` EXE icon embedding are omitted on Linux.
-- The source contains Windows DPI calls via `ctypes.windll`, but they are wrapped in exception handling, so they should fail safely on Linux.
-- Tray support depends on the Linux desktop environment; GNOME may need extensions or AppIndicator compatibility for tray icons.
+- App name is `LeoNote` in the updated Windows spec.
+- Linux uses a native executable, not `.exe`.
+- Linux build excludes Windows-only modules and does not use Windows version metadata.
+- The updated source stores data in `~/.leonote_config.json` and `~/.leonote_tasks.json`.
+- The updated source also adds `run_at_startup` and more themes such as `peach`, `rose`, `lavender`, `sky`, `slate`, and dark variants. 

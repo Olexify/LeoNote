@@ -1,5 +1,5 @@
 """
-Le'Sticky Notes — lightweight sticky task app with Obsidian integration
+LeoNote — lightweight sticky task app with Obsidian integration
 """
 
 import tkinter as tk
@@ -13,31 +13,47 @@ try:
 except Exception:
     _TRAY_OK = False
 
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".lesticky_config.json")
-TASKS_FILE  = os.path.join(os.path.expanduser("~"), ".lesticky_tasks.json")
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".leonote_config.json")
+TASKS_FILE  = os.path.join(os.path.expanduser("~"), ".leonote_tasks.json")
 
 DEFAULT_CONFIG = {
     "obsidian_note_path": "",
     "always_on_top": True,
     "window_x": 100, "window_y": 100,
     "window_w": 380, "window_h": 600,
-    "theme": "yellow",
+    "theme": "peach",
     "show_system_titlebar": False,
     "show_in_tray": False,
     "start_hidden_to_tray": False,
     "show_in_taskbar": False,
+    "run_at_startup": False,
     "ui_scale": 1.0,
     "settings_x": None, "settings_y": None,
     "settings_w": 520, "settings_h": 600,
 }
 
 THEMES = {
-    "yellow": {"bg":"#fef08a","header_bg":"#fde047","text":"#1c1917","muted":"#6b5f00","entry_bg":"#fef9c3","entry_fg":"#1c1917","btn_bg":"#fde047","btn_fg":"#1c1917","btn_hover":"#facc15","check_done":"#84cc16","separator":"#fcd34d","item_bg":"#fef9c3","item_hover":"#fde68a","tab_bg":"#fde68a","archive":"#ca8a04","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
-    "dark":   {"bg":"#1c1b19","header_bg":"#27251f","text":"#e7e5e4","muted":"#a8a29e","entry_bg":"#27251f","entry_fg":"#e7e5e4","btn_bg":"#3f3d38","btn_fg":"#e7e5e4","btn_hover":"#4f4c47","check_done":"#4f98a3","separator":"#393836","item_bg":"#201f1d","item_hover":"#2d2c2a","tab_bg":"#2d2c2a","archive":"#d6a547","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
-    "light":  {"bg":"#f7f6f2","header_bg":"#f0ede8","text":"#28251d","muted":"#6b7280","entry_bg":"#ffffff","entry_fg":"#28251d","btn_bg":"#e6e4df","btn_fg":"#28251d","btn_hover":"#dcd9d5","check_done":"#437a22","separator":"#dcd9d5","item_bg":"#fafaf8","item_hover":"#f0ede8","tab_bg":"#ece8e1","archive":"#a16207","close_hover":"#ef4444","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "yellow": {"bg":"#fff7c2","header_bg":"#f6d860","text":"#3b2f07","muted":"#8a7430","entry_bg":"#fffbe0","entry_fg":"#3b2f07","btn_bg":"#f4cf4d","btn_fg":"#3b2f07","btn_hover":"#eabf20","check_done":"#65a30d","separator":"#efd981","item_bg":"#fffbe6","item_hover":"#fff3bf","tab_bg":"#f8e89b","archive":"#b7791f","close_hover":"#ef4444","low":"#3b82f6","medium":"#f59e0b","high":"#dc2626"},
+    "dark": {"bg":"#1c1b19","header_bg":"#27251f","text":"#e7e5e4","muted":"#a8a29e","entry_bg":"#27251f","entry_fg":"#e7e5e4","btn_bg":"#3f3d38","btn_fg":"#e7e5e4","btn_hover":"#4f4c47","check_done":"#4f98a3","separator":"#393836","item_bg":"#201f1d","item_hover":"#2d2c2a","tab_bg":"#2d2c2a","archive":"#d6a547","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
+    "light": {"bg":"#f7f6f2","header_bg":"#f0ede8","text":"#28251d","muted":"#6b7280","entry_bg":"#ffffff","entry_fg":"#28251d","btn_bg":"#e6e4df","btn_fg":"#28251d","btn_hover":"#dcd9d5","check_done":"#437a22","separator":"#dcd9d5","item_bg":"#fafaf8","item_hover":"#f0ede8","tab_bg":"#ece8e1","archive":"#a16207","close_hover":"#ef4444","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
     "sakura": {"bg":"#ffeef5","header_bg":"#ffc9dd","text":"#4a1f2d","muted":"#8b5d6b","entry_bg":"#fff7fa","entry_fg":"#4a1f2d","btn_bg":"#ffb3cf","btn_fg":"#4a1f2d","btn_hover":"#ff9fc2","check_done":"#22c55e","separator":"#f8b4c9","item_bg":"#fff7fa","item_hover":"#ffe4ef","tab_bg":"#ffe0ec","archive":"#be185d","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
-    "mint":   {"bg":"#ecfdf5","header_bg":"#bbf7d0","text":"#16352a","muted":"#4b6b5b","entry_bg":"#f7fffb","entry_fg":"#16352a","btn_bg":"#86efac","btn_fg":"#16352a","btn_hover":"#6ee7b7","check_done":"#16a34a","separator":"#a7f3d0","item_bg":"#f7fffb","item_hover":"#dcfce7","tab_bg":"#d1fae5","archive":"#047857","close_hover":"#ef4444","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
-    "ocean":  {"bg":"#eff6ff","header_bg":"#bfdbfe","text":"#132c52","muted":"#5b6f92","entry_bg":"#f8fbff","entry_fg":"#132c52","btn_bg":"#93c5fd","btn_fg":"#132c52","btn_hover":"#60a5fa","check_done":"#2563eb","separator":"#bfdbfe","item_bg":"#f8fbff","item_hover":"#dbeafe","tab_bg":"#dbeafe","archive":"#1d4ed8","close_hover":"#ef4444","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "mint": {"bg":"#ecfdf5","header_bg":"#bbf7d0","text":"#16352a","muted":"#4b6b5b","entry_bg":"#f7fffb","entry_fg":"#16352a","btn_bg":"#86efac","btn_fg":"#16352a","btn_hover":"#6ee7b7","check_done":"#16a34a","separator":"#a7f3d0","item_bg":"#f7fffb","item_hover":"#dcfce7","tab_bg":"#d1fae5","archive":"#047857","close_hover":"#ef4444","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "ocean": {"bg":"#eff6ff","header_bg":"#bfdbfe","text":"#132c52","muted":"#5b6f92","entry_bg":"#f8fbff","entry_fg":"#132c52","btn_bg":"#93c5fd","btn_fg":"#132c52","btn_hover":"#60a5fa","check_done":"#2563eb","separator":"#bfdbfe","item_bg":"#f8fbff","item_hover":"#dbeafe","tab_bg":"#dbeafe","archive":"#1d4ed8","close_hover":"#ef4444","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "rose": {"bg":"#fff1f2","header_bg":"#fecdd3","text":"#4a1d24","muted":"#8f5b66","entry_bg":"#fff8f8","entry_fg":"#4a1d24","btn_bg":"#fda4af","btn_fg":"#4a1d24","btn_hover":"#fb7185","check_done":"#16a34a","separator":"#fecdd3","item_bg":"#fff8f8","item_hover":"#ffe4e6","tab_bg":"#ffe4e6","archive":"#be123c","close_hover":"#e11d48","low":"#60a5fa","medium":"#f59e0b","high":"#dc2626"},
+    "lavender": {"bg":"#faf5ff","header_bg":"#e9d5ff","text":"#35214f","muted":"#7c6a97","entry_bg":"#fdfaff","entry_fg":"#35214f","btn_bg":"#d8b4fe","btn_fg":"#35214f","btn_hover":"#c084fc","check_done":"#22c55e","separator":"#e9d5ff","item_bg":"#fdfaff","item_hover":"#f3e8ff","tab_bg":"#f3e8ff","archive":"#7e22ce","close_hover":"#dc2626","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "peach": {"bg":"#fff7ed","header_bg":"#fed7aa","text":"#4a2b18","muted":"#916a4e","entry_bg":"#fffaf5","entry_fg":"#4a2b18","btn_bg":"#fdba74","btn_fg":"#4a2b18","btn_hover":"#fb923c","check_done":"#16a34a","separator":"#fed7aa","item_bg":"#fffaf5","item_hover":"#ffedd5","tab_bg":"#ffedd5","archive":"#c2410c","close_hover":"#dc2626","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "sky": {"bg":"#f0f9ff","header_bg":"#bae6fd","text":"#0f2f4a","muted":"#5f7f9a","entry_bg":"#f8fcff","entry_fg":"#0f2f4a","btn_bg":"#7dd3fc","btn_fg":"#0f2f4a","btn_hover":"#38bdf8","check_done":"#0284c7","separator":"#bae6fd","item_bg":"#f8fcff","item_hover":"#e0f2fe","tab_bg":"#e0f2fe","archive":"#0369a1","close_hover":"#dc2626","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "slate": {"bg":"#f8fafc","header_bg":"#cbd5e1","text":"#1e293b","muted":"#64748b","entry_bg":"#ffffff","entry_fg":"#1e293b","btn_bg":"#cbd5e1","btn_fg":"#1e293b","btn_hover":"#94a3b8","check_done":"#22c55e","separator":"#cbd5e1","item_bg":"#ffffff","item_hover":"#f1f5f9","tab_bg":"#e2e8f0","archive":"#334155","close_hover":"#dc2626","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "fire": {"bg":"#fff5f3","header_bg":"#fca5a5","text":"#4a1c14","muted":"#946057","entry_bg":"#fffaf9","entry_fg":"#4a1c14","btn_bg":"#fb7185","btn_fg":"#4a1c14","btn_hover":"#ef4444","check_done":"#16a34a","separator":"#fecaca","item_bg":"#fffaf9","item_hover":"#ffe4e6","tab_bg":"#ffe4e6","archive":"#b91c1c","close_hover":"#dc2626","low":"#2563eb","medium":"#f59e0b","high":"#dc2626"},
+    "sand": {"bg":"#fff8ed","header_bg":"#f5d7a1","text":"#4a3720","muted":"#8b7355","entry_bg":"#fffdf8","entry_fg":"#4a3720","btn_bg":"#e9c46a","btn_fg":"#4a3720","btn_hover":"#ddb85a","check_done":"#65a30d","separator":"#efdfbf","item_bg":"#fffdf8","item_hover":"#fbf1dc","tab_bg":"#f7ebd0","archive":"#b7791f","close_hover":"#dc2626","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "island": {"bg":"#eefcf7","header_bg":"#9fe3cf","text":"#133a33","muted":"#5d7f77","entry_bg":"#f8fffc","entry_fg":"#133a33","btn_bg":"#67d4b7","btn_fg":"#133a33","btn_hover":"#34caa0","check_done":"#0f9f6e","separator":"#bfeee0","item_bg":"#f8fffc","item_hover":"#def8ef","tab_bg":"#d8f4eb","archive":"#0f766e","close_hover":"#dc2626","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
+    "crimson": {"bg":"#1a0f12","header_bg":"#3a161d","text":"#f7d7db","muted":"#b48a91","entry_bg":"#221317","entry_fg":"#f7d7db","btn_bg":"#5b1f2b","btn_fg":"#f7d7db","btn_hover":"#7a2434","check_done":"#22c55e","separator":"#3a161d","item_bg":"#211417","item_hover":"#2a181d","tab_bg":"#2a181d","archive":"#f87171","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
+    "forest": {"bg":"#0d1711","header_bg":"#183323","text":"#d8f3df","muted":"#8cb09a","entry_bg":"#132018","entry_fg":"#d8f3df","btn_bg":"#235336","btn_fg":"#d8f3df","btn_hover":"#2f6a45","check_done":"#22c55e","separator":"#183323","item_bg":"#122019","item_hover":"#17281f","tab_bg":"#17281f","archive":"#86efac","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
+    "emerald": {"bg":"#071a17","header_bg":"#0d3b35","text":"#d5fff5","muted":"#7cb6aa","entry_bg":"#0b2521","entry_fg":"#d5fff5","btn_bg":"#0f5b50","btn_fg":"#d5fff5","btn_hover":"#147768","check_done":"#10b981","separator":"#0d3b35","item_bg":"#0b2521","item_hover":"#10302b","tab_bg":"#10302b","archive":"#5eead4","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
+    "midnight": {"bg":"#0b1220","header_bg":"#16233a","text":"#dbeafe","muted":"#7f93b0","entry_bg":"#10192b","entry_fg":"#dbeafe","btn_bg":"#1d4e89","btn_fg":"#dbeafe","btn_hover":"#2563eb","check_done":"#38bdf8","separator":"#16233a","item_bg":"#0f1a2e","item_hover":"#14213a","tab_bg":"#14213a","archive":"#60a5fa","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
+    "space": {"bg":"#09090f","header_bg":"#171726","text":"#ececff","muted":"#8f90ae","entry_bg":"#10101b","entry_fg":"#ececff","btn_bg":"#27273d","btn_fg":"#ececff","btn_hover":"#343452","check_done":"#7dd3fc","separator":"#171726","item_bg":"#10101b","item_hover":"#171726","tab_bg":"#171726","archive":"#c4b5fd","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
+    "violet-night": {"bg":"#120b1f","header_bg":"#24123a","text":"#f1e7ff","muted":"#a38cbf","entry_bg":"#1a102a","entry_fg":"#f1e7ff","btn_bg":"#4c1d95","btn_fg":"#f1e7ff","btn_hover":"#6d28d9","check_done":"#22c55e","separator":"#24123a","item_bg":"#1a102a","item_hover":"#221434","tab_bg":"#221434","archive":"#c084fc","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
+    "eclipse": {"bg":"#0a0a0a","header_bg":"#1a1a1a","text":"#f2f2f2","muted":"#8a8a8a","entry_bg":"#111111","entry_fg":"#f2f2f2","btn_bg":"#2a2a2a","btn_fg":"#f2f2f2","btn_hover":"#3a3a3a","check_done":"#9ca3af","separator":"#1a1a1a","item_bg":"#111111","item_hover":"#181818","tab_bg":"#181818","archive":"#d4d4d8","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"}
 }
 PRIORITIES = ["none","low","medium","high"]
 OPEN_SEP = "<!-- OPEN_TASKS -->"
@@ -170,7 +186,7 @@ class App:
 
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title("Le'Sticky Notes")
+        self.root.title("LeoNote")
         self.root.minsize(300,380)
         self._apply_scale()
         self._apply_icon()
@@ -268,7 +284,7 @@ class App:
                 _pystray.MenuItem("Hide",  lambda icon,item: self.root.after(0, self.root.withdraw)),
                 _pystray.MenuItem("Exit",  lambda icon,item: self.root.after(0, self._close)),
             )
-            self._tray_icon = _pystray.Icon("Le'Sticky Notes", img, "Le'Sticky Notes", menu)
+            self._tray_icon = _pystray.Icon("LeoNote", img, "LeoNote", menu)
             import threading
             threading.Thread(target=self._tray_icon.run, daemon=True).start()
         except Exception:
@@ -402,7 +418,14 @@ class App:
                     pass
 
     def _soft_pin_color(self):
-        return self.T["btn_hover"] if self.cfg["theme"] == "dark" else self.T["separator"]
+        darkish = {"dark", "crimson", "forest", "emerald", "midnight", "space", "violet-night", "eclipse"}
+        visible_light = {"ocean", "rose", "lavender", "peach", "sky", "slate", "fire", "sand", "island", "yellow"}
+        name = self.cfg.get("theme")
+        if name in darkish:
+            return self.T["btn_hover"]
+        if name in visible_light:
+            return self.T["btn_bg"]
+        return self.T["separator"]
 
     def _build_titlebar(self):
         T = self.T
@@ -414,7 +437,7 @@ class App:
             il.pack(side="left",padx=(8,4),pady=4)
             for ev,cb in (("<ButtonPress-1>",self._drag_start),("<B1-Motion>",self._drag_do),("<Double-Button-1>",lambda e:self._toggle_maximize())):
                 il.bind(ev,cb)
-        lbl = tk.Label(hdr,text="Le'Sticky Notes",bg=T["header_bg"],fg=T["text"],font=("Segoe UI Variable",11,"bold"),padx=6,pady=8)
+        lbl = tk.Label(hdr,text="LeoNote",bg=T["header_bg"],fg=T["text"],font=("Segoe UI Variable",11,"bold"),padx=6,pady=8)
         lbl.pack(side="left")
         for ev,cb in (("<ButtonPress-1>",self._drag_start),("<B1-Motion>",self._drag_do),("<Double-Button-1>",lambda e:self._toggle_maximize())):
             lbl.bind(ev,cb)
@@ -748,7 +771,7 @@ class App:
         self._settings_widgets = {k: [] for k in ["frame_bg","section","label","muted","entry","button","check","radio","scale","swatch"]}
         win = tk.Toplevel(self.root)
         self._settings_win = win
-        win.title("Le'Sticky — Settings")
+        win.title("LeoNote — Settings")
         win.minsize(420,420)
         x = self.cfg["settings_x"] if self.cfg["settings_x"] is not None else self.root.winfo_x()+20
         y = self.cfg["settings_y"] if self.cfg["settings_y"] is not None else self.root.winfo_y()+40
@@ -811,10 +834,11 @@ class App:
         rowf("Task note path:", note_row)
 
         section("Theme")
-        theme_var = tk.StringVar(value=self.cfg.get("theme","yellow"))
+        theme_var = tk.StringVar(value=self.cfg.get("theme","peach"))
         def apply_theme():
             self.cfg["theme"] = theme_var.get(); save_config(self.cfg)
             self._retheme_main_only()
+            self.root.after(10, self._keep_settings_alive)
             if self._settings_win and self._settings_win.winfo_exists():
                 self._settings_win.after(1, self._keep_settings_alive)
         tf = tk.Frame(sf,bg=self.T["bg"]); tf.pack(fill="x",padx=12,pady=4); self._settings_widgets["frame_bg"].append(tf)
@@ -822,7 +846,10 @@ class App:
             f=tk.Frame(tf,bg=self.T["bg"]); f.grid(row=i//3,column=i%3,sticky="w",padx=6,pady=3)
             r=tk.Radiobutton(f,text=name.capitalize(),variable=theme_var,value=name,bg=self.T["bg"],fg=self.T["text"],activebackground=self.T["bg"],selectcolor=self.T["entry_bg"],font=("Segoe UI Variable",9),command=apply_theme)
             r.pack(side="left")
-            sw=tk.Label(f,text="   ",bg=samp["header_bg"],width=3); sw.pack(side="left",padx=(4,0))
+            preview_bg = samp["header_bg"]
+            if name in {"dark", "crimson", "forest", "emerald", "midnight", "space", "violet-night", "eclipse"}:
+                preview_bg = samp["btn_bg"]
+            sw=tk.Label(f,text="   ",bg=preview_bg,width=3); sw.pack(side="left",padx=(4,0))
             self._settings_widgets["frame_bg"].append(f); self._settings_widgets["radio"].append(r); self._settings_widgets["swatch"].append(sw)
 
         section("Display & Behavior")
@@ -839,11 +866,12 @@ class App:
         live_toggle("Start hidden to tray:", "start_hidden_to_tray")
         live_toggle("Show Windows title bar:", "show_system_titlebar", lambda v: self._apply_window_mode())
         live_toggle("Display in taskbar:", "show_in_taskbar", lambda v: self._apply_window_mode())
+        live_toggle("Run at Windows startup:", "run_at_startup", lambda v: self._apply_startup(v))
 
         section("UI Scale")
         scale_var = tk.DoubleVar(value=float(self.cfg.get("ui_scale",1.0)))
         def scale_row(p):
-            sc=tk.Scale(p,variable=scale_var,from_=0.5,to=3.0,resolution=0.05,orient="horizontal",bg=self.T["bg"],fg=self.T["text"],troughcolor=self.T["separator"],activebackground=self.T["btn_hover"],highlightthickness=0,bd=0,length=220,command=lambda v:(self._set_scale(float(v)), self._keep_settings_alive()))
+            sc=tk.Scale(p,variable=scale_var,from_=0.5,to=3.0,resolution=0.05,orient="horizontal",bg=self.T["bg"],fg=self.T["text"],troughcolor=self.T["separator"],activebackground=self.T["btn_hover"],highlightthickness=0,bd=0,length=220,command=lambda v:(self._set_scale(float(v)), self.root.after(10, self._keep_settings_alive)))
             sc.pack(side="left")
             lb=tk.Label(p,textvariable=scale_var,bg=self.T["bg"],fg=self.T["text"],font=("Segoe UI Variable",9),width=5)
             lb.pack(side="left",padx=4)
@@ -882,6 +910,34 @@ class App:
         c.pack(side="left")
         self._settings_widgets["check"].append(c)
         return c
+
+    def _startup_shortcut_path(self):
+        appdata = os.environ.get("APPDATA", "")
+        return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "LeoNote.bat") if appdata else ""
+
+    def _apply_startup(self, enabled):
+        path = self._startup_shortcut_path()
+        if not path:
+            return
+        try:
+            if enabled:
+                exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(sys.argv[0])
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(f'@echo off\nstart "" "{exe}"\n')
+            else:
+                if os.path.exists(path):
+                    os.remove(path)
+        except Exception:
+            pass
+
+    def _reset_scale(self, var=None):
+        self.cfg["ui_scale"] = 1.0
+        save_config(self.cfg)
+        if var is not None:
+            var.set(1.0)
+        self._apply_scale()
+        self._retheme_main_only()
+        self.root.after(10, self._keep_settings_alive)
 
     def _toggle_topmost(self):
         v = not self.root.attributes("-topmost")

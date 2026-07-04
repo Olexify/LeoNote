@@ -1,5 +1,5 @@
 """
-Le'Sticky Notes — lightweight sticky task app with Obsidian integration
+LeoNote — lightweight sticky task app with Obsidian integration
 """
 
 import tkinter as tk
@@ -13,8 +13,5 @@ try:
 except Exception:
     _TRAY_OK = False
 
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".lesticky_config.json")
-TASKS_FILE = os.path.join(os.path.expanduser("~"), ".lesticky_tasks.json")
-
-# Replace this file with your full current sticky_notes.py source if needed.
-# This package's purpose is to provide the updated Linux build scaffolding that matches the new Windows build.
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".leonote_config.json")
+TASKS_FILE = os.path.join(os.path.expanduser("~"), ".leonote_tasks.json")
