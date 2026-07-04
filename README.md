@@ -1,10 +1,10 @@
-# 📝 Le'Sticky Notes
+# 📝 Leo Note
 
 A **lightweight, standalone sticky notes / task app for Windows** with optional **Obsidian** integration.
 
 Made for the “let me jot this down real quick” moments - without Electron bloat, cloud accounts, or productivity theater. On image you can see the Obsidian live integration as backup of solved tasks.
 
-<img width="1835" height="1440" alt="Le'Sticky Notes screenshot" src="https://github.com/user-attachments/assets/92207e3a-9ec9-45ae-8e27-a5a00f882887" />
+<img width="1904" height="1440" alt="LeoNotes Notes screenshot" src="https://github.com/user-attachments/assets/51683988-0b99-4197-885e-b099a5ad3639" />
 
 ---
 
@@ -27,7 +27,7 @@ Made for the “let me jot this down real quick” moments - without Electron bl
 
 ## 🪨 Obsidian integration (optional)
 
-Point Le'Sticky Notes to a Markdown note in your vault, and it will sync tasks into that file.
+Point LeoNotes Notes to a Markdown note in your vault, and it will sync tasks into that file.
 Open and completed tasks are kept in separate sections, and tasks are updated by internal IDs to avoid duplicates.
 
 No cloud. No accounts. Your vault stays yours.
@@ -89,7 +89,7 @@ build.bat
 
 ## 🪨 Obsidian integration (optional)
 
-Le'Sticky Notes works **fully standalone** - Obsidian is not required.
+LeoNotes Notes works **fully standalone** - Obsidian is not required.
 
 If you *do* use Obsidian, just set a target Markdown note and the app will sync tasks into it.
 Works with **any Obsidian vault** (yours, mine, portable vault on a USB stick - doesn’t matter).
@@ -115,7 +115,7 @@ If you want a ready-to-use productivity vault template, I maintain:
 
 👉 ObsidianUltimate: <a href="https://github.com/Olexify/ObsidianUltimate">Github Repo</a>
 
-Le'Sticky Notes is not locked to ObsidianUltimate - it just pairs nicely with it as notes backup.
+LeoNotes Notes is not locked to ObsidianUltimate - it just pairs nicely with it as notes backup.
 
 > ⚠️ ObsidianUltimate note: don’t rename `Diary` or `Utilities` (some automations depend on them).
 
@@ -123,9 +123,9 @@ Le'Sticky Notes is not locked to ObsidianUltimate - it just pairs nicely with it
 ---
 
 
-## 🪟 Windows StartUP 🚀
+## 🪟 Windows StartUP 🚀 (Resolved in settings now, but left in guide for curious ones)
 
-If you want Le'Sticky Notes to open automatically when Windows starts, you can add it to the **Startup** folder.
+If you want LeoNotes Notes to open automatically when Windows starts, you can add it to the **Startup** folder.
 
 This is useful if you want your sticky tasks ready immediately after login.
 
@@ -149,7 +149,7 @@ shell:startup
 
 This opens the Windows Startup folder.
 
-4. Create a shortcut to `LeStickyNotes.exe`
+4. Create a shortcut to `LeoNotes.exe`
 
 You can do this by:
 
@@ -157,7 +157,7 @@ You can do this by:
 - Choosing **Create shortcut**
 - Moving that shortcut into the Startup folder
 
-Once the shortcut is inside that folder, Windows will launch Le'Sticky Notes automatically on login.
+Once the shortcut is inside that folder, Windows will launch Leo Notes automatically on login.
 
 ### ⚠️ Important note
 
@@ -167,7 +167,7 @@ If you later move the app to another folder, the startup shortcut may stop worki
 
 ### Optional in-app tray behavior
 
-If you want Le'Sticky Notes to start more quietly, you can combine Windows startup with:
+If you want LeoNotes to start more quietly, you can combine Windows startup with:
 
 - **Show in tray**
 - **Start hidden to tray**
