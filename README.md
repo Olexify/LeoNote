@@ -177,7 +177,7 @@ That way the app launches with Windows without immediately opening a full window
 ---
 
 
-<img width="1800" height="170" alt="image" src="https://github.com/user-attachments/assets/8acecd7e-c0d2-41c0-9fcc-0893d07bbbf3" />
+<img width="2560" height="173" alt="image" src="https://github.com/user-attachments/assets/9e026179-d552-4392-935d-ae0a510e4b50" />
 </p>
 
 <p align="center">
