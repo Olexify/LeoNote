@@ -1,11 +1,9 @@
 """
 LeoNote - lightweight sticky task app with Obsidian integration
-v3 features: docs square grid + trash + singleton window + inline rename,
-             habits rename (dbl-click) + delete confirmation,
-             XP reverts on unsolve, subtask name flush on new subtask,
-             full export (tasks/docs/habits/progression),
-             CPU/RAM optimisations (debounced config save, rate-limited purge,
-             deferred bar draw, grid relayout debounce, lighter scroll binding)
+v4 features: docs multi-category filter dropdown + per-category backup folders +
+             refresh button (scan dirs) + delete/restore syncs backup dir,
+             new-doc popup focuses & clears title; archive delete stays on archive tab;
+             habits Mark-done grants XP; all v3 features retained
 """
 
 import tkinter as tk
@@ -40,6 +38,8 @@ DEFAULT_CONFIG = {
     "ui_font": "Segoe UI Variable",
     "settings_x": None, "settings_y": None,
     "settings_w": 520, "settings_h": 600,
+    "docs_categories": ["Default"],
+    "docs_active_categories": [],
 }
 
 THEMES = {
@@ -610,6 +610,36 @@ class App:
     def _trash_items(self):
         return [t for t in self.tasks if t.get("deleted")]
 
+    def _trash_habits(self):
+        data = load_habits()
+        return [h for h in data.get("habits",[]) if h.get("deleted")]
+
+    def _purge_old_habit_trash(self):
+        now = now_dt()
+        data = load_habits()
+        habits = data.get("habits",[])
+        kept = [h for h in habits
+            if not h.get("deleted") or
+               (h.get("deleted_at") and now - parse_iso(h["deleted_at"]) <= datetime.timedelta(hours=TRASH_HOURS))]
+        if len(kept) != len(habits):
+            data["habits"] = kept
+            save_habits(data)
+
+    def _trash_habits(self):
+        data = load_habits()
+        return [h for h in data.get("habits",[]) if h.get("deleted")]
+
+    def _purge_old_habit_trash(self):
+        now = now_dt()
+        data = load_habits()
+        habits = data.get("habits",[])
+        kept = [h for h in habits
+            if not h.get("deleted") or
+               (h.get("deleted_at") and now - parse_iso(h["deleted_at"]) <= datetime.timedelta(hours=TRASH_HOURS))]
+        if len(kept) != len(habits):
+            data["habits"] = kept
+            save_habits(data)
+
     def _trash_docs(self):
         return [d for d in load_docs() if d.get("deleted")]
 
@@ -644,7 +674,7 @@ class App:
         ]
         for tab, name in tab_map:
             tab.configure(bg=T["btn_bg"] if self.current_tab==name else T["tab_bg"], fg=T["text"])
-        if self._trash_items() or self._trash_docs():
+        if self._trash_items() or self._trash_docs() or self._trash_habits():
             self._tab_bin.pack(side="left",padx=(6,0),pady=4)
             self._tab_bin.configure(bg=T["btn_bg"] if self.current_tab=="trash" else T["tab_bg"], fg=T["text"])
         else:
@@ -722,7 +752,7 @@ class App:
         for w in self.task_frame.winfo_children(): w.destroy()
         now_ts = datetime.datetime.now().timestamp()
         if now_ts - getattr(self,"_last_purge_ts",0) > 60:
-            self._purge_old_trash(); self._purge_old_doc_trash()
+            self._purge_old_trash(); self._purge_old_doc_trash(); self._purge_old_habit_trash()
             self._last_purge_ts = now_ts
         T = self.T
         if   self.current_tab=="active":  self._render_active(T)
@@ -783,8 +813,8 @@ class App:
 
     def _sync_doc_backup(self, doc, folder):
         """Write doc as a markdown file in the backup folder."""
-        import re, os
-        safe = re.sub(r'[\\/:*?"<>|]',"_", doc.get("title","Untitled"))[:60] or "Untitled"
+        import re as _re
+        safe = _re.sub(r'[\\/:*?"<>|]',"_", doc.get("title","Untitled"))[:60] or "Untitled"
         path = os.path.join(folder, safe+".md")
         try:
             os.makedirs(folder, exist_ok=True)
@@ -793,10 +823,33 @@ class App:
         except Exception:
             pass
 
+    def _delete_doc_backup(self, doc):
+        """Remove backup markdown file when doc is deleted."""
+        import re as _re
+        bp = self.cfg.get("docs_backup_path","").strip()
+        if not bp: return
+        cat = doc.get("category","Default") or "Default"
+        cat_folder = os.path.join(bp, cat)
+        safe = _re.sub(r'[\\/:*?"<>|]',"_", doc.get("title","Untitled"))[:60] or "Untitled"
+        path = os.path.join(cat_folder, safe+".md")
+        try:
+            if os.path.exists(path): os.remove(path)
+        except Exception:
+            pass
+
+    def _restore_doc_backup(self, doc):
+        """Re-write backup markdown file when doc is restored from trash."""
+        bp = self.cfg.get("docs_backup_path","").strip()
+        if not bp: return
+        cat = doc.get("category","Default") or "Default"
+        cat_folder = os.path.join(bp, cat)
+        self._sync_doc_backup(doc, cat_folder)
+
     def _render_trash(self, T):
-        tasks = sorted(self._trash_items(), key=lambda t:t.get("deleted_at",""), reverse=True)
-        docs  = sorted(self._trash_docs(),  key=lambda d:d.get("deleted_at",""), reverse=True)
-        if not tasks and not docs:
+        tasks   = sorted(self._trash_items(),   key=lambda t:t.get("deleted_at",""), reverse=True)
+        docs    = sorted(self._trash_docs(),    key=lambda d:d.get("deleted_at",""), reverse=True)
+        habits  = sorted(self._trash_habits(),  key=lambda h:h.get("deleted_at",""), reverse=True)
+        if not tasks and not docs and not habits:
             tk.Label(self.task_frame,text="Bin is empty.",bg=T["bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
                 justify="center",pady=28).pack(fill="x")
@@ -804,11 +857,57 @@ class App:
         if tasks:
             for task in tasks:
                 self._task_row(task, trashed=True)
+        if habits:
+            tk.Label(self.task_frame,text="- Deleted Habits -",bg=T["bg"],fg=T["muted"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),pady=4).pack(fill="x")
+            for habit in habits:
+                self._trash_habit_row(habit, T)
         if docs:
             tk.Label(self.task_frame,text="- Deleted Docs -",bg=T["bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),pady=4).pack(fill="x")
             for doc in docs:
                 self._trash_doc_row(doc, T)
+
+    def _trash_habit_row(self, habit, T):
+        row = tk.Frame(self.task_frame,bg=T["item_bg"],pady=4,padx=6); row.pack(fill="x",pady=2)
+        tw = tk.Frame(row,bg=T["item_bg"]); tw.pack(side="left",fill="x",expand=True)
+        tk.Label(tw,text=f"🌱 {habit.get('name','Habit')}",bg=T["item_bg"],fg=T["text"],
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),10,"bold"),anchor="w").pack(anchor="w")
+        deleted_at = habit.get("deleted_at","")
+        if deleted_at:
+            remain = max(0,int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(deleted_at))).total_seconds()//3600))
+            tk.Label(tw,text=f"~{remain}h left",bg=T["item_bg"],fg=T["muted"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),anchor="w").pack(anchor="w")
+        bf = tk.Frame(row,bg=T["item_bg"]); bf.pack(side="right")
+        def restore_habit(h=habit):
+            data = load_habits()
+            for hx in data.get("habits",[]):
+                if hx.get("id")==h.get("id"):
+                    hx.pop("deleted",None); hx.pop("deleted_at",None); break
+            save_habits(data); self._render_tasks()
+        _del_hab_ref = [None]
+        def del_habit_confirm(btn_r=_del_hab_ref, h=habit):
+            b = btn_r[0]
+            if b is None: return
+            if getattr(b,"_confirm",False):
+                data = load_habits()
+                data["habits"] = [hx for hx in data.get("habits",[]) if hx.get("id")!=h.get("id")]
+                save_habits(data); self._render_tasks()
+            else:
+                b._confirm = True; b.configure(text="Sure?",fg=T["close_hover"])
+                b.after(2000, lambda: (setattr(b,"_confirm",False),
+                    b.configure(text="🗑",fg=T["text"])) if b.winfo_exists() else None)
+        tk.Button(bf,text="↺",command=restore_habit,
+            bg=T["item_bg"],fg=T["text"],relief="flat",bd=0,padx=4,
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),9),cursor="hand2",
+            activebackground=T["item_hover"]).pack(side="right")
+        del_hab_btn = tk.Button(bf,text="🗑",command=del_habit_confirm,
+            bg=T["item_bg"],fg=T["text"],relief="flat",bd=0,padx=4,
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),9),cursor="hand2",
+            activebackground=T["item_hover"])
+        del_hab_btn._confirm=False; _del_hab_ref[0]=del_hab_btn
+        del_hab_btn.pack(side="right")
+
 
     def _trash_doc_row(self, doc, T):
         row = tk.Frame(self.task_frame,bg=T["item_bg"],pady=4,padx=6); row.pack(fill="x",pady=2)
@@ -823,10 +922,14 @@ class App:
         bf = tk.Frame(row,bg=T["item_bg"]); bf.pack(side="right")
         def restore_doc(d=doc):
             all_docs=load_docs()
+            restored = None
             for dd in all_docs:
                 if dd.get("id")==d.get("id"):
-                    dd.pop("deleted",None); dd.pop("deleted_at",None); break
-            save_docs(all_docs); self._render_tasks()
+                    dd.pop("deleted",None); dd.pop("deleted_at",None)
+                    restored = dd; break
+            save_docs(all_docs)
+            if restored: self._restore_doc_backup(restored)
+            self._render_tasks()
         _del_doc_ref = [None]
         def del_doc_confirm(btn_r=_del_doc_ref, d=doc):
             b = btn_r[0]
@@ -959,16 +1062,225 @@ class App:
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"italic"),pady=8).pack(anchor="w")
 
     # ── feature 8: Docs hub (square grid, trash, singleton window, inline rename) ─
+    # ── helper: scan backup dir and import any .md files not yet in docs ──────
+    def _scan_docs_backup(self):
+        bp = self.cfg.get("docs_backup_path","").strip()
+        if not bp or not os.path.isdir(bp): return
+        all_docs = load_docs()
+        existing_paths = {}  # title -> id map for quick lookup
+        for d in all_docs:
+            if not d.get("deleted"):
+                existing_paths[d.get("title","").lower()] = d["id"]
+        changed = False
+        cats = self.cfg.get("docs_categories",["Default"])
+        for entry in os.scandir(bp):
+            # check category sub-folders
+            if entry.is_dir() and entry.name in cats:
+                scan_dir = entry.path
+                cat_name = entry.name
+            elif entry.is_file() and entry.name.endswith(".md"):
+                scan_dir = bp; cat_name = "Default"
+                # handled below as single file
+                scan_dir = None
+            else:
+                continue
+            if scan_dir:
+                try:
+                    for fe in os.scandir(scan_dir):
+                        if fe.is_file() and fe.name.endswith(".md"):
+                            title = fe.name[:-3]
+                            if title.lower() not in existing_paths:
+                                try:
+                                    with open(fe.path,"r",encoding="utf-8") as f:
+                                        body = f.read()
+                                    # strip leading "# title" line if present
+                                    lines = body.splitlines()
+                                    if lines and lines[0].startswith("# "):
+                                        body = "\n".join(lines[1:]).lstrip("\n")
+                                    new_doc = {"id":str(uuid.uuid4()),"title":title,"body":body,
+                                               "category":cat_name,
+                                               "created":now_dt().isoformat(timespec="seconds"),
+                                               "deleted":False}
+                                    all_docs.insert(0, new_doc)
+                                    existing_paths[title.lower()] = new_doc["id"]
+                                    changed = True
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+        # also scan root of backup dir for loose .md files → Default category
+        try:
+            for fe in os.scandir(bp):
+                if fe.is_file() and fe.name.endswith(".md"):
+                    title = fe.name[:-3]
+                    if title.lower() not in existing_paths:
+                        try:
+                            with open(fe.path,"r",encoding="utf-8") as f:
+                                body = f.read()
+                            lines = body.splitlines()
+                            if lines and lines[0].startswith("# "):
+                                body = "\n".join(lines[1:]).lstrip("\n")
+                            new_doc = {"id":str(uuid.uuid4()),"title":title,"body":body,
+                                       "category":"Default",
+                                       "created":now_dt().isoformat(timespec="seconds"),
+                                       "deleted":False}
+                            all_docs.insert(0, new_doc)
+                            existing_paths[title.lower()] = new_doc["id"]
+                            changed = True
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        if changed:
+            save_docs(all_docs)
+
     def _render_docs(self, T):
         all_docs = [d for d in load_docs() if not d.get("deleted")]
-        tb = tk.Frame(self.task_frame,bg=T["bg"]); tb.pack(fill="x",padx=6,pady=(8,4))
+        # ensure every doc has a category
+        for d in all_docs:
+            d.setdefault("category","Default")
+
+        # ensure config has categories list
+        cats = self.cfg.setdefault("docs_categories",["Default"])
+        if "Default" not in cats:
+            cats.insert(0,"Default")
+        active_cats = self.cfg.setdefault("docs_active_categories",[])
+
+        # ── toolbar ──────────────────────────────────────────────────────
+        tb = tk.Frame(self.task_frame,bg=T["bg"]); tb.pack(fill="x",padx=6,pady=(8,2))
         tk.Label(tb,text="📄  Docs",bg=T["bg"],fg=T["text"],
             font=(self.cfg.get("ui_font","Segoe UI Variable"),11,"bold")).pack(side="left")
+        tk.Button(tb,text="⟳",command=lambda:(self._scan_docs_backup(), self._render_tasks()),
+            bg=T["btn_bg"],fg=T["btn_fg"],relief="flat",
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
+            padx=6,pady=2,cursor="hand2",activebackground=T["btn_hover"]).pack(side="right",padx=(2,0))
         tk.Button(tb,text="+ New",command=self._new_doc,
             bg=T["btn_bg"],fg=T["btn_fg"],relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
-            padx=8,pady=3,cursor="hand2",activebackground=T["btn_hover"]).pack(side="right")
-        # search bar
+            padx=8,pady=3,cursor="hand2",activebackground=T["btn_hover"]).pack(side="right",padx=(2,0))
+
+        # ── category management row ───────────────────────────────────────
+        cat_row = tk.Frame(self.task_frame,bg=T["bg"]); cat_row.pack(fill="x",padx=6,pady=(0,2))
+
+        # helper: save cats and re-render
+        def _save_cats():
+            self.cfg["docs_categories"] = cats
+            self.cfg["docs_active_categories"] = active_cats
+            save_config(self.cfg)
+            self._render_tasks()
+
+        # "Categories ▾" dropdown button
+        cat_lbl_text = "All Categories" if not active_cats else ", ".join(active_cats)
+        if len(cat_lbl_text) > 22: cat_lbl_text = cat_lbl_text[:19]+"…"
+        cat_dd_btn = tk.Button(cat_row, text=f"🗂 {cat_lbl_text} ▾",
+            bg=T["btn_bg"],fg=T["btn_fg"],relief="flat",
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+            padx=6,pady=2,cursor="hand2",anchor="w",
+            activebackground=T["btn_hover"])
+        cat_dd_btn.pack(side="left",padx=(0,4))
+
+        def _open_cat_dropdown(e=None):
+            pop = tk.Toplevel(self.root)
+            pop.overrideredirect(True)
+            pop.configure(bg=T["separator"])
+            pop.attributes("-topmost",True)
+            bx = cat_dd_btn.winfo_rootx()
+            by = cat_dd_btn.winfo_rooty() + cat_dd_btn.winfo_height() + 2
+            pop.geometry(f"+{bx}+{by}")
+            inner = tk.Frame(pop,bg=T["bg"],padx=4,pady=4)
+            inner.pack(fill="both",expand=True,padx=1,pady=1)
+
+            # "All" option (clear filter)
+            def _toggle_all():
+                active_cats.clear()
+                _save_cats()
+                try: pop.destroy()
+                except Exception: pass
+            all_var = tk.BooleanVar(value=not active_cats)
+            tk.Checkbutton(inner,text="All (no filter)",variable=all_var,
+                command=_toggle_all,
+                bg=T["bg"],fg=T["text"],activebackground=T["bg"],
+                selectcolor=T["entry_bg"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),9)).pack(anchor="w")
+            tk.Frame(inner,bg=T["separator"],height=1).pack(fill="x",pady=2)
+
+            # per-category checkboxes
+            for cat in list(cats):
+                v = tk.BooleanVar(value=cat in active_cats)
+                def _toggle_cat(c=cat, var=v):
+                    if var.get():
+                        if c not in active_cats: active_cats.append(c)
+                    else:
+                        if c in active_cats: active_cats.remove(c)
+                    self.cfg["docs_active_categories"] = active_cats
+                    save_config(self.cfg)
+                    # refresh grid without closing popup
+                    q2 = doc_search_var.get().strip().lower() if not ph_shown[0] else ""
+                    filtered = _apply_filter(all_docs, q2)
+                    self._doc_grid_docs = filtered
+                    if hasattr(self,"_grid_job"): self.root.after_cancel(self._grid_job)
+                    self._grid_job = self.root.after(80, lambda: self._relayout_doc_grid(
+                        self._doc_grid_host.winfo_width() if hasattr(self,"_doc_grid_host") and self._doc_grid_host.winfo_exists() else 320))
+                    # update button label
+                    lbl2 = "All Categories" if not active_cats else ", ".join(active_cats)
+                    if len(lbl2)>22: lbl2=lbl2[:19]+"…"
+                    cat_dd_btn.configure(text=f"🗂 {lbl2} ▾")
+                tk.Checkbutton(inner,text=cat,variable=v,command=_toggle_cat,
+                    bg=T["bg"],fg=T["text"],activebackground=T["bg"],
+                    selectcolor=T["entry_bg"],
+                    font=(self.cfg.get("ui_font","Segoe UI Variable"),9)).pack(anchor="w")
+
+            tk.Frame(inner,bg=T["separator"],height=1).pack(fill="x",pady=2)
+
+            # add new category
+            new_cat_var = tk.StringVar()
+            add_f = tk.Frame(inner,bg=T["bg"]); add_f.pack(fill="x",pady=(0,2))
+            ne = tk.Entry(add_f,textvariable=new_cat_var,bg=T["entry_bg"],fg=T["entry_fg"],
+                insertbackground=T["entry_fg"],relief="flat",
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+                highlightthickness=1,highlightbackground=T["separator"],width=14)
+            ne.pack(side="left",ipady=3,padx=(0,2))
+            ne.insert(0,"New category…")
+            ne.bind("<FocusIn>", lambda e: ne.delete(0,"end") if ne.get()=="New category…" else None)
+            def _add_cat(e=None):
+                name = new_cat_var.get().strip()
+                if name and name != "New category…" and name not in cats:
+                    cats.append(name)
+                    _save_cats()
+                try: pop.destroy()
+                except Exception: pass
+            tk.Button(add_f,text="+",command=_add_cat,
+                bg=T["btn_bg"],fg=T["btn_fg"],relief="flat",
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+                padx=4,pady=2,cursor="hand2",activebackground=T["btn_hover"]).pack(side="left")
+            ne.bind("<Return>", _add_cat)
+
+            # delete category buttons
+            for cat in [c for c in cats if c != "Default"]:
+                df = tk.Frame(inner,bg=T["bg"]); df.pack(fill="x",pady=1)
+                tk.Label(df,text=cat,bg=T["bg"],fg=T["muted"],
+                    font=(self.cfg.get("ui_font","Segoe UI Variable"),8)).pack(side="left")
+                def _del_cat(c=cat):
+                    if c in cats: cats.remove(c)
+                    if c in active_cats: active_cats.remove(c)
+                    _save_cats()
+                    try: pop.destroy()
+                    except Exception: pass
+                tk.Button(df,text="✕",command=_del_cat,
+                    bg=T["bg"],fg=T["muted"],relief="flat",bd=0,
+                    font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
+                    cursor="hand2",activebackground=T["item_hover"]).pack(side="right")
+
+            # close on click-outside
+            def _close_pop(e=None):
+                try: pop.destroy()
+                except Exception: pass
+            pop.bind("<FocusOut>", lambda e: self.root.after(100, _close_pop))
+            ne.focus_set()
+
+        cat_dd_btn.bind("<Button-1>", _open_cat_dropdown)
+
+        # ── search bar ──────────────────────────────────────────────────
         sb = tk.Frame(self.task_frame,bg=T["bg"]); sb.pack(fill="x",padx=6,pady=(0,4))
         doc_search_var = tk.StringVar()
         se = tk.Entry(sb,textvariable=doc_search_var,bg=T["entry_bg"],fg=T["entry_fg"],
@@ -981,29 +1293,39 @@ class App:
             if not doc_search_var.get(): se.insert(0,"🔍 Search docs…"); ph_shown[0]=True
         def _hide_ph(e):
             if ph_shown[0]: se.delete(0,"end"); ph_shown[0]=False
+
+        def _apply_filter(docs_list, q):
+            out = docs_list
+            if active_cats:
+                out = [d for d in out if d.get("category","Default") in active_cats]
+            if q:
+                out = [d for d in out if q in d.get("title","").lower() or q in d.get("body","").lower()]
+            return out
+
         def _on_search(*_):
             q = doc_search_var.get().strip().lower()
             if ph_shown[0]: q=""
-            filtered = [d for d in all_docs if
-                q in d.get("title","").lower() or q in d.get("body","").lower()] if q else all_docs
+            filtered = _apply_filter(all_docs, q)
             self._doc_grid_docs = filtered
             if hasattr(self,"_grid_job"): self.root.after_cancel(self._grid_job)
             self._grid_job = self.root.after(80, lambda: self._relayout_doc_grid(
-                self._doc_grid_host.winfo_width() or 320))
+                self._doc_grid_host.winfo_width() if hasattr(self,"_doc_grid_host") and self._doc_grid_host.winfo_exists() else 320))
         se.bind("<FocusIn>", _hide_ph)
         se.bind("<FocusOut>", lambda e: (_show_ph() if not doc_search_var.get() else None))
         doc_search_var.trace_add("write", _on_search)
         self.root.after(10, _show_ph)
+
         if not all_docs:
             tk.Label(self.task_frame,text="No docs yet.\nClick + New to create one.",
                 bg=T["bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
                 justify="center",pady=24).pack(fill="x")
             return
-        docs = all_docs
+
+        filtered_docs = _apply_filter(all_docs, "")
         grid_host = tk.Frame(self.task_frame,bg=T["bg"]); grid_host.pack(fill="x",padx=6,pady=2)
         self._doc_grid_host = grid_host
-        self._doc_grid_docs = docs
+        self._doc_grid_docs = filtered_docs
         self._doc_grid_T    = T
         def _debounce_grid(e, gh=grid_host):
             if hasattr(self,"_grid_job"): self.root.after_cancel(self._grid_job)
@@ -1035,41 +1357,64 @@ class App:
             chars_per_line = max(8,(cell_w-16)//7)
             max_body_chars = chars_per_line * 20
             preview_raw = body_txt[:max_body_chars]+("…" if len(body_txt)>max_body_chars else "")
+            cat_tag = doc.get("category","Default") or "Default"
             tl = tk.Label(cell,text=title_txt,bg=T["item_bg"],fg=T["text"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold"),
                 anchor="nw",wraplength=cell_w-8,justify="left",padx=4,pady=3)
             tl.grid(row=0,column=0,sticky="ew",padx=0,pady=0)
+            cl = tk.Label(cell,text=f"📂 {cat_tag}",bg=T["item_bg"],fg=T["archive"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
+                anchor="nw",padx=4,pady=0)
+            cl.grid(row=1,column=0,sticky="ew",padx=0,pady=0)
+            cell.rowconfigure(1,weight=0)
+            cell.rowconfigure(2,weight=1)
             pl = tk.Label(cell,text=preview_raw,bg=T["item_bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
                 anchor="nw",wraplength=cell_w-8,justify="left",padx=4,pady=1)
-            pl.grid(row=1,column=0,sticky="nsew",padx=0,pady=(0,16))
+            pl.grid(row=2,column=0,sticky="nsew",padx=0,pady=(0,16))
             def trash_doc(d=doc):
                 all_docs=load_docs()
                 for dd in all_docs:
                     if dd.get("id")==d.get("id"):
                         dd["deleted"]=True; dd["deleted_at"]=now_dt().isoformat(timespec="seconds"); break
-                save_docs(all_docs); self._render_tasks()
+                save_docs(all_docs)
+                self._delete_doc_backup(d)
+                self._render_tasks()
             del_btn = tk.Label(cell,text="✕",bg=T["item_bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),7),cursor="hand2",padx=2)
             del_btn.place(x=cell_w-16,y=3)
             del_btn.bind("<Button-1>", lambda e,fn=trash_doc: fn())
             tl.bind("<Button-1>",        lambda e,d=doc,l=tl: self._inline_rename_doc(d,l))
             tl.bind("<Double-Button-1>", lambda e,d=doc: self._open_doc(d))
-            for w in (cell,pl):
+            for w in (cell,pl,cl):
                 w.bind("<Double-Button-1>", lambda e,d=doc: self._open_doc(d))
-            def _enter(e,ww=(cell,tl,pl,del_btn)):
-                for w in ww[:3]: w.configure(bg=T["item_hover"])
-                ww[3].configure(bg=T["item_hover"],fg=T["text"])
-            def _leave(e,ww=(cell,tl,pl,del_btn)):
-                for w in ww[:3]: w.configure(bg=T["item_bg"])
-                ww[3].configure(bg=T["item_bg"],fg=T["muted"])
-            for w in (cell,tl,pl):
+            def _enter(e,ww=(cell,tl,pl,cl,del_btn)):
+                for w in ww[:4]: w.configure(bg=T["item_hover"])
+                ww[4].configure(bg=T["item_hover"],fg=T["text"])
+            def _leave(e,ww=(cell,tl,pl,cl,del_btn)):
+                for w in ww[:4]: w.configure(bg=T["item_bg"])
+                ww[4].configure(bg=T["item_bg"],fg=T["muted"])
+            for w in (cell,tl,pl,cl):
                 w.bind("<Enter>",_enter); w.bind("<Leave>",_leave)
             # drag to reorder
-            for w in (cell,tl,pl):
+            for w in (cell,tl,pl,cl):
                 w.bind("<ButtonPress-1>",   lambda e,i=i: self._doc_drag_start(e,i))
                 w.bind("<B1-Motion>",       self._doc_drag_motion)
                 w.bind("<ButtonRelease-1>", self._doc_drag_end)
+            # forward scroll events from card widgets to main canvas
+            for w in (cell,tl,pl,cl,del_btn):
+                for seq in ("<MouseWheel>","<Button-4>","<Button-5>"):
+                    try: w.bind(seq, self._scroll, add="+")
+                    except Exception: pass
+                for seq in ("<Control-MouseWheel>","<Control-Button-4>","<Control-Button-5>"):
+                    try: w.bind(seq, self._ctrl_scroll, add="+")
+                    except Exception: pass
+        # bind scroll on the grid host itself too
+        gh = self._doc_grid_host
+        if gh.winfo_exists():
+            for seq in ("<MouseWheel>","<Button-4>","<Button-5>"):
+                try: gh.bind(seq, self._scroll, add="+")
+                except Exception: pass
 
     def _inline_rename_doc(self, doc, label):
         label.place_forget()
@@ -1090,23 +1435,45 @@ class App:
             new = var.get().strip() or "Untitled"
             try: e.destroy()
             except Exception: pass
+            old_title = doc.get("title","")
             doc["title"]=new
             all_docs=load_docs()
             for i,d in enumerate(all_docs):
                 if d.get("id")==doc.get("id"): all_docs[i]=doc; break
             save_docs(all_docs)
+            # rename backup file: delete old name, write new name
+            bp = self.cfg.get("docs_backup_path","").strip()
+            if bp and old_title and old_title != new:
+                import re as _re2
+                cat = doc.get("category","Default") or "Default"
+                cat_folder = os.path.join(bp, cat)
+                old_safe = _re2.sub(r'[\\/:*?"<>|]',"_", old_title)[:60] or "Untitled"
+                old_path = os.path.join(cat_folder, old_safe+".md")
+                try:
+                    if os.path.exists(old_path): os.remove(old_path)
+                except Exception: pass
+                self._sync_doc_backup(doc, cat_folder)
             if self.current_tab=="docs": self._render_tasks()
         e.bind("<Return>",finish)
         e.bind("<Escape>",lambda ev:(e.destroy(),))
         e.bind("<FocusOut>",lambda ev: self.root.after(80,finish))
 
     def _new_doc(self):
-        d = {"id":str(uuid.uuid4()),"title":"New Doc","body":"",
-             "created":now_dt().isoformat(timespec="seconds"),"deleted":False}
+        # preselect category: use first active filter cat, else "Default"
+        active_cats = self.cfg.get("docs_active_categories", [])
+        cats = self.cfg.get("docs_categories", ["Default"])
+        if "Default" not in cats: cats.insert(0, "Default")
+        if active_cats:
+            preset_cat = active_cats[0] if active_cats[0] in cats else "Default"
+        else:
+            preset_cat = "Default"
+        d = {"id":str(uuid.uuid4()),"title":"","body":"",
+             "created":now_dt().isoformat(timespec="seconds"),"deleted":False,
+             "category":preset_cat}
         docs = load_docs(); docs.insert(0,d); save_docs(docs)
-        self._open_doc(d)
+        self._open_doc(d, focus_title=True)
 
-    def _open_doc(self, doc):
+    def _open_doc(self, doc, focus_title=False):
         wid = doc.get("id","")
         for w in self.root.winfo_children():
             if isinstance(w,tk.Toplevel) and getattr(w,"_doc_id",None)==wid:
@@ -1114,9 +1481,16 @@ class App:
         win = tk.Toplevel(self.root)
         win._doc_id = wid
         win.title(f"Doc - {doc.get('title','Untitled')}")
-        win.geometry("500x520")
+        # restore saved geometry or use default
+        _saved_geo = self.cfg.get("doc_win_geometry", "500x520")
+        win.geometry(_saved_geo)
         win.configure(bg=self.T["bg"])
         win.attributes("-topmost", True)
+        def _save_win_geo(e=None):
+            if win.winfo_exists():
+                self.cfg["doc_win_geometry"] = win.geometry()
+                save_config(self.cfg)
+        win.bind("<Configure>", _save_win_geo)
         T = self.T
         title_var = tk.StringVar(value=doc.get("title",""))
         tf = tk.Frame(win,bg=T["bg"]); tf.pack(fill="x",padx=10,pady=(10,4))
@@ -1128,6 +1502,21 @@ class App:
             font=(self.cfg.get("ui_font","Segoe UI Variable"),11,"bold"),
             highlightthickness=1,highlightbackground=T["separator"])
         title_entry.pack(side="left",fill="x",expand=True,ipady=4,padx=(6,4))
+        if focus_title:
+            win.after(50, lambda: (title_entry.focus_set(), title_entry.select_range(0,"end")))
+        # category selector
+        cat_row2 = tk.Frame(win,bg=T["bg"]); cat_row2.pack(fill="x",padx=10,pady=(0,2))
+        tk.Label(cat_row2,text="Category:",bg=T["bg"],fg=T["muted"],
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),9)).pack(side="left")
+        _cats2 = self.cfg.get("docs_categories",["Default"])
+        if "Default" not in _cats2: _cats2.insert(0,"Default")
+        _cat_var = tk.StringVar(value=doc.get("category","Default") or "Default")
+        _original_cat = [doc.get("category","Default") or "Default"]  # snapshot at open time
+        cat_menu = ttk.Combobox(cat_row2,textvariable=_cat_var,values=_cats2,
+            state="readonly",width=18,
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),9))
+        cat_menu.pack(side="left",padx=(6,4))
+        # (category is read from _cat_var at save time — no eager mutation)
         # inline done button beside title field
         _done_btn_ref = [None]
         _done_btn_ref[0] = tk.Button(tf,text="✓",width=2,
@@ -1149,19 +1538,39 @@ class App:
         body_text.pack(fill="both",expand=True)
         body_text.insert("1.0", doc.get("body",""))
         def save_doc():
+            old_title = doc.get("title","")
+            old_cat   = _original_cat[0]  # snapshot from window-open (or last save)
             doc["title"] = title_var.get().strip() or "Untitled"
             doc["body"]  = body_text.get("1.0","end-1c")
             doc["updated"] = now_dt().isoformat(timespec="seconds")
+            doc["category"] = _cat_var.get()
+            new_cat = doc["category"] or "Default"
             all_docs = load_docs()
             # remove old entry, prepend updated doc so it appears at top
             all_docs = [d for d in all_docs if d.get("id")!=doc.get("id")]
             all_docs.insert(0, doc)
             save_docs(all_docs)
             win.title(f"Doc - {doc['title']}")
-            # sync backup md file if path configured
             bp = self.cfg.get("docs_backup_path","").strip()
             if bp:
-                self._sync_doc_backup(doc, bp)
+                import re as _re3
+                new_cat_folder = os.path.join(bp, new_cat)
+                # if category changed, remove file from old category folder
+                if old_cat != new_cat:
+                    old_safe = _re3.sub(r'[\\/:*?"<>|]',"_", old_title)[:60] or "Untitled"
+                    old_path = os.path.join(bp, old_cat, old_safe+".md")
+                    try:
+                        if os.path.exists(old_path): os.remove(old_path)
+                    except Exception: pass
+                # if title changed within same category, delete old file
+                elif old_title and old_title != doc["title"]:
+                    old_safe = _re3.sub(r'[\\/:*?"<>|]',"_", old_title)[:60] or "Untitled"
+                    old_path = os.path.join(new_cat_folder, old_safe+".md")
+                    try:
+                        if os.path.exists(old_path): os.remove(old_path)
+                    except Exception: pass
+                self._sync_doc_backup(doc, new_cat_folder)
+            _original_cat[0] = new_cat  # update snapshot for next save
             if self.current_tab=="docs": self._render_tasks()
         def close_save():
             save_doc(); win.destroy()
@@ -1186,7 +1595,7 @@ class App:
     # ── feature 9: Habits ────────────────────────────────────────────────────
     def _render_habits(self, T):
         data    = load_habits()
-        habits  = data.get("habits",[])
+        habits  = [h for h in data.get("habits",[]) if not h.get("deleted")]
         log     = data.get("log",{})
         today   = datetime.date.today().isoformat()
 
@@ -1254,7 +1663,11 @@ class App:
                 if btn_ref[0] is None: return
                 b = btn_ref[0]
                 if getattr(b,"_confirm",False):
-                    data["habits"] = [x for x in data["habits"] if x["id"]!=hid]
+                    for hx in data["habits"]:
+                        if hx["id"]==hid:
+                            hx["deleted"] = True
+                            hx["deleted_at"] = now_dt().isoformat(timespec="seconds")
+                            break
                     save_habits(data); self._render_tasks()
                 else:
                     b._confirm = True
@@ -1271,8 +1684,16 @@ class App:
             def toggle_habit(hid=hid, data=data, today=today):
                 log2 = data.setdefault("log",{})
                 day_log = log2.setdefault(today,[])
-                if hid in day_log: day_log.remove(hid)
-                else:              day_log.append(hid)
+                if hid in day_log:
+                    day_log.remove(hid)
+                    # revoke XP for un-marking
+                    self.cfg["xp"] = max(0, self.cfg.get("xp",0) - 10)
+                    save_config(self.cfg)
+                else:
+                    day_log.append(hid)
+                    # award XP for marking done
+                    self.cfg["xp"] = self.cfg.get("xp",0) + 10
+                    save_config(self.cfg)
                 save_habits(data); self._render_tasks()
             btn_text = "✓ Done" if done_today_h else "Mark done"
             btn_bg2  = T["check_done"] if done_today_h else T["btn_bg"]
@@ -1786,7 +2207,10 @@ class App:
         save_tasks(self.tasks)
         np = self.cfg.get("obsidian_note_path","").strip()
         if np: remove_from_note(np,task["id"])
-        self.current_tab = "active"; self._render_tasks()
+        # Stay on archive tab if that is where the delete was triggered from
+        if self.current_tab != "archive":
+            self.current_tab = "active"
+        self._render_tasks()
 
     def _recover_task(self, task):
         task["deleted"] = False; task.pop("deleted_at",None)
