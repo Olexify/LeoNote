@@ -123,7 +123,7 @@ LeoNote is not locked to ObsidianUltimate - it just pairs nicely with it as note
 ---
 
 
-## 🪟 Windows StartUP 🚀 (Resolved in settings now, but left in guide for curious ones)
+## 🪟 Windows StartUP 🚀 (Deprecated tutorial, reason: settings now has "Run at startup", but left in guide for curious ones)
 
 If you want LeoNote to open automatically when Windows starts, you can add it to the **Startup** folder.
 
