@@ -42,7 +42,7 @@ Built for the **"let me jot this down real quick"** moments.
 - 🪨 **Local-first**: saves config + tasks as JSON in your home folder
 - 📅 **Habits** daily tracker with one-click check-ins and streaks
 - 📄 **Docs** local text snippets for reusable templates (speeches, emails, prompts)
-- 🎮 **Earn XP** and level up by completing tasks and checking in habits
+- 🎮 **Earn XP** and level up by completing tasks and habits checkins!
 <!-- 
 ---
 
