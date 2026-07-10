@@ -543,6 +543,7 @@ class App:
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
             padx=4,pady=2,cursor="hand2",activebackground=self.T["btn_hover"])
         self._pomo_play_btn.pack(side="right")
+        self._pomo_play_btn.bind("<Button-3>", self._pomo_skip)
         # clock icon → open settings
         tk.Button(bot,text="⏱",command=self._open_pomo_settings,
             bg=self.T["header_bg"],fg=self.T["text"],relief="flat",bd=0,
@@ -1151,18 +1152,19 @@ class App:
 
         # ── Daily activity heatmap ─────────────────────────────────────────
         tk.Frame(f,bg=T["separator"],height=1).pack(fill="x",pady=(6,6))
-        tk.Label(f,text="📅  Daily Work Heatmap (last 60 days)",bg=T["bg"],fg=T["text"],
-            font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold")).pack(anchor="w",pady=(0,4))
 
-        # color bands: work seconds thresholds
+        daily = self.cfg.get("pomo_daily", {})
+        today = datetime.date.today()
+
+        # color bands
         _HMAP_BANDS = [
-            (0,         T["item_bg"]),       # 0 s    – no work, blank
-            (1,         "#e05c5c"),           # 1s–30m – red (any work up to 30 min)
-            (1800,      "#f4a623"),           # 30m–1h – orange
-            (3600,      "#f4e040"),           # 1h–2h  – yellow
-            (7200,      "#4caf88"),           # 2h–4h  – green
-            (14400,     "#29b6d8"),           # 4h–6h  – cyan/blue
-            (21600,     "#a855f7"),           # ≥6h    – purple
+            (0,         T["item_bg"]),
+            (1,         "#e05c5c"),
+            (1800,      "#f4a623"),
+            (3600,      "#f4e040"),
+            (7200,      "#4caf88"),
+            (14400,     "#29b6d8"),
+            (21600,     "#a855f7"),
         ]
         def _day_color(secs):
             for threshold, color in reversed(_HMAP_BANDS):
@@ -1170,64 +1172,112 @@ class App:
                     return color
             return T["item_bg"]
 
-        daily = self.cfg.get("pomo_daily", {})
-        today = datetime.date.today()
-        days  = [(today - datetime.timedelta(days=i)) for i in range(59, -1, -1)]
+        # title row with expand button
+        _hmap_days = [60]
+        hmap_title_row = tk.Frame(f, bg=T["bg"]); hmap_title_row.pack(fill="x", pady=(0,2))
+        _hmap_title_lbl = tk.Label(hmap_title_row,
+            text="📅  Daily Work Heatmap (last 60 days)",
+            bg=T["bg"], fg=T["text"],
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold"))
+        _hmap_title_lbl.pack(side="left")
 
         # legend
         leg_f = tk.Frame(f, bg=T["bg"]); leg_f.pack(anchor="w", pady=(0,4))
-        legend_items = [
-            ("None", T["item_bg"]),
-            ("<30m", "#e05c5c"),
-            ("<1h",  "#f4a623"),
-            ("<2h",  "#f4e040"),
-            ("<4h",  "#4caf88"),
-            ("<6h",  "#29b6d8"),
-            ("6h+",  "#a855f7"),
-        ]
-        for txt, col in legend_items:
+        for txt, col in [("None",T["item_bg"]),("<30m","#e05c5c"),("<1h","#f4a623"),
+                         ("<2h","#f4e040"),("<4h","#4caf88"),("<6h","#29b6d8"),("6h+","#a855f7")]:
             li = tk.Frame(leg_f, bg=T["bg"]); li.pack(side="left", padx=(0,6))
-            tk.Frame(li, bg=col, width=10, height=10, relief="flat").pack(side="left", padx=(0,2))
+            tk.Frame(li, bg=col, width=10, height=10).pack(side="left", padx=(0,2))
             tk.Label(li, text=txt, bg=T["bg"], fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),7)).pack(side="left")
 
-        # grid of day squares: 10 rows × 6 columns = 60 days
-        COLS = 10
-        heat_f = tk.Frame(f, bg=T["bg"]); heat_f.pack(anchor="w", pady=(0,6))
-        for i, day in enumerate(days):
-            row, col = divmod(i, COLS)
-            day_key  = day.isoformat()
-            day_data = daily.get(day_key, {})
-            w_secs   = day_data.get("work", 0)
-            b_secs   = day_data.get("break", 0)
-            color    = _day_color(w_secs)
-            tip_text = (f"{day_key}\n💼 {w_secs//60}m work\n☕ {b_secs//60}m break"
-                        if (w_secs or b_secs) else day_key)
-            sq = tk.Canvas(heat_f, width=18, height=18, bd=0,
-                highlightthickness=1,
-                highlightbackground=T["separator"],
-                highlightcolor=T["separator"])
-            sq.create_rectangle(0, 0, 18, 18, fill=color, outline="")
-            sq.grid(row=row, column=col, padx=1, pady=1)
-            # tooltip on hover
-            tip_lbl = [None]
-            def _enter_sq(e, t=tip_text):
-                tl = tk.Toplevel(self.root)
-                tl.overrideredirect(True)
-                tl.attributes("-topmost", True)
-                tl.configure(bg=T["header_bg"])
-                tk.Label(tl, text=t, bg=T["header_bg"], fg=T["text"],
-                    font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
-                    padx=6, pady=3, justify="left").pack()
-                tl.geometry(f"+{e.x_root+12}+{e.y_root+12}")
-                tip_lbl[0] = tl
-            def _leave_sq(e):
-                if tip_lbl[0]:
-                    try: tip_lbl[0].destroy()
-                    except Exception: pass
-                    tip_lbl[0] = None
-            sq.bind("<Enter>", _enter_sq)
-            sq.bind("<Leave>", _leave_sq)
+        heat_container = [None]
+
+        def _build_heatmap(n_days):
+            if heat_container[0] and heat_container[0].winfo_exists():
+                heat_container[0].destroy()
+            days = [(today - datetime.timedelta(days=i)) for i in range(n_days-1, -1, -1)]
+            COLS = 10 if n_days <= 60 else 26
+            heat_f = tk.Frame(f, bg=T["bg"]); heat_f.pack(anchor="w", pady=(0,4))
+            heat_container[0] = heat_f
+            for i, day in enumerate(days):
+                r, c   = divmod(i, COLS)
+                dk     = day.isoformat()
+                dd     = daily.get(dk, {})
+                w_s    = dd.get("work", 0)
+                b_s    = dd.get("break", 0)
+                color  = _day_color(w_s)
+                tip    = (f"{dk}\n\U0001f4bc {w_s//60}m work\n\u2615 {b_s//60}m break"
+                          if (w_s or b_s) else dk)
+                sq = tk.Canvas(heat_f, width=18, height=18, bd=0,
+                    highlightthickness=1,
+                    highlightbackground=T["separator"],
+                    highlightcolor=T["separator"])
+                sq.create_rectangle(0, 0, 18, 18, fill=color, outline="")
+                sq.grid(row=r, column=c, padx=1, pady=1)
+                tip_lbl = [None]
+                def _enter(e, t=tip):
+                    tl = tk.Toplevel(self.root); tl.overrideredirect(True)
+                    tl.attributes("-topmost", True); tl.configure(bg=T["header_bg"])
+                    tk.Label(tl, text=t, bg=T["header_bg"], fg=T["text"],
+                        font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+                        padx=6, pady=3, justify="left").pack()
+                    tl.geometry(f"+{e.x_root+12}+{e.y_root+12}")
+                    tip_lbl[0] = tl
+                def _leave(e):
+                    if tip_lbl[0]:
+                        try: tip_lbl[0].destroy()
+                        except Exception: pass
+                        tip_lbl[0] = None
+                sq.bind("<Enter>", _enter)
+                sq.bind("<Leave>", _leave)
+
+        _build_heatmap(60)
+
+        # expand button row (below grid)
+        exp_row = tk.Frame(f, bg=T["bg"]); exp_row.pack(anchor="e", pady=(0,2))
+        def _toggle_expand():
+            if _hmap_days[0] == 60:
+                _hmap_days[0] = 365
+                _hmap_title_lbl.configure(text="📅  Daily Work Heatmap (last 365 days)")
+                exp_btn.configure(text="⊡ 60d")
+            else:
+                _hmap_days[0] = 60
+                _hmap_title_lbl.configure(text="📅  Daily Work Heatmap (last 60 days)")
+                exp_btn.configure(text="⊞ 365d")
+            _build_heatmap(_hmap_days[0])
+        exp_btn = tk.Button(exp_row, text="⊞ 365d", command=_toggle_expand,
+            bg=T["bg"], fg=T["muted"], relief="flat", bd=0,
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
+            padx=4, pady=1, cursor="hand2",
+            activebackground=T["item_hover"])
+        exp_btn.pack(side="right")
+
+        # ── All-time totals ────────────────────────────────────────────────
+        tk.Frame(f,bg=T["separator"],height=1).pack(fill="x",pady=(6,4))
+        tk.Label(f,text="📊  All-Time Totals",bg=T["bg"],fg=T["text"],
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold")).pack(anchor="w",pady=(0,4))
+
+        total_work  = self.cfg.get("pomo_total_work_secs",0)
+        total_break = self.cfg.get("pomo_total_break_secs",0)
+        total_all   = total_work + total_break
+
+        def _fmt_full(s):
+            h = s // 3600; m = (s % 3600) // 60
+            return f"{h}h {m:02d}m" if h else f"{m}m {s%60:02d}s"
+
+        tot_f = tk.Frame(f, bg=T["bg"]); tot_f.pack(fill="x")
+        tot_f.columnconfigure(1, weight=1)
+        for i,(lbl_t,val_t,col) in enumerate([
+            ("💼 Total work:",   _fmt_full(total_work),  self.cfg.get("pomo_work_color","#e05c5c")),
+            ("☕ Total break:",  _fmt_full(total_break), self.cfg.get("pomo_break_color","#4caf88")),
+            ("🕐 Grand total:", _fmt_full(total_all),   T["text"]),
+        ]):
+            tk.Label(tot_f,text=lbl_t,bg=T["bg"],fg=T["muted"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+                anchor="w").grid(row=i,column=0,sticky="w",pady=1)
+            tk.Label(tot_f,text=val_t,bg=T["bg"],fg=col,
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8,"bold"),
+                anchor="e").grid(row=i,column=1,sticky="e",pady=1)
 
     # ── feature 8: Docs hub (square grid, trash, singleton window, inline rename) ─
     # ── helper: scan backup dir and import any .md files not yet in docs ──────
@@ -2746,7 +2796,12 @@ class App:
 
     def _keep_settings_alive(self):
         if self._settings_win and self._settings_win.winfo_exists():
-            try: self._settings_win.lift(); self._settings_win.attributes("-topmost",True)
+            try:
+                self._settings_win.deiconify()  # restores if minimized
+                self._settings_win.state("normal")
+                self._settings_win.lift()
+                self._settings_win.focus_force()
+                self._settings_win.attributes("-topmost", True)
             except Exception: pass
 
 
@@ -2857,6 +2912,50 @@ class App:
         self._pomo_update_label()
         self._pomo_job = self.root.after(1000, self._pomo_schedule_step)
 
+    def _pomo_skip(self, event=None):
+        """Right-click handler: show a 2-second skip confirmation near the cursor."""
+        # Don't show if timer not running
+        if not self._pomo_running: return
+        T = self.T
+        skip_win = tk.Toplevel(self.root)
+        skip_win.overrideredirect(True)
+        skip_win.attributes("-topmost", True)
+        skip_win.configure(bg=T["header_bg"])
+        phase_name = "Work" if self._pomo_phase == "work" else "Break"
+        next_name  = "Break" if self._pomo_phase == "work" else "Work"
+        f = tk.Frame(skip_win, bg=T["header_bg"], padx=10, pady=8); f.pack()
+        tk.Label(f, text=f"Skip {phase_name} → {next_name}?",
+            bg=T["header_bg"], fg=T["text"],
+            font=(self.cfg.get("ui_font","Segoe UI Variable"), 9, "bold")).pack(pady=(0,6))
+        btn_f = tk.Frame(f, bg=T["header_bg"]); btn_f.pack()
+        _confirmed = [False]
+        def _do_skip():
+            _confirmed[0] = True
+            skip_win.destroy()
+            # accumulate current phase time before skipping
+            self._pomo_accumulate()
+            if self._pomo_job:
+                self.root.after_cancel(self._pomo_job); self._pomo_job = None
+            self._pomo_next_phase()
+        def _cancel():
+            skip_win.destroy()
+        tk.Button(btn_f, text=f"⏭ Skip to {next_name}", command=_do_skip,
+            bg=T["check_done"], fg="#ffffff", relief="flat",
+            font=(self.cfg.get("ui_font","Segoe UI Variable"), 8),
+            padx=8, pady=3, cursor="hand2",
+            activebackground=T["btn_hover"]).pack(side="left", padx=(0,6))
+        tk.Button(btn_f, text="✕", command=_cancel,
+            bg=T["header_bg"], fg=T["muted"], relief="flat",
+            font=(self.cfg.get("ui_font","Segoe UI Variable"), 8),
+            padx=6, pady=3, cursor="hand2").pack(side="left")
+        # position near cursor
+        skip_win.update_idletasks()
+        x = event.x_root - skip_win.winfo_reqwidth() // 2
+        y = event.y_root - skip_win.winfo_reqheight() - 8
+        skip_win.geometry(f"+{x}+{y}")
+        # auto-dismiss after 2 seconds if no action
+        skip_win.after(2000, lambda: skip_win.destroy() if skip_win.winfo_exists() and not _confirmed[0] else None)
+
     def _pomo_schedule_tick(self):
         """Play a random tick sound (1–16) every second if enabled and running."""
         if not self._pomo_running: return
@@ -2965,6 +3064,7 @@ class App:
             font=font_b, padx=16, pady=6, cursor="hand2",
             activebackground=T["btn_hover"])
         _ptbtn.pack(pady=(8,0))
+        _ptbtn.bind("<Button-3>", self._pomo_skip)
         _popup_toggle_btn[0] = _ptbtn
 
         # live-update the timer label every second
@@ -3121,18 +3221,62 @@ class App:
             win.after(100, _draw_bar)
 
         # Reset stats button
-        def _reset_stats():
-            if messagebox.askyesno("Reset stats",
-                    "Reset all pomodoro statistics?", parent=win):
-                self.cfg["pomo_total_work_secs"]  = 0
-                self.cfg["pomo_total_break_secs"] = 0
-                save_config(self.cfg)
-                win.destroy(); self._open_pomo_settings()
-        tk.Button(inner, text="🗑 Reset statistics", command=_reset_stats,
+        _reset_btn_ref = [None]
+        def _reset_stats(btn_ref=_reset_btn_ref):
+            b = btn_ref[0]
+            if b is None: return
+            if not getattr(b, "_confirm", False):
+                b._confirm = True
+                b.configure(text="Sure? 🗑", fg=T["close_hover"])
+                b.after(2500, lambda: (
+                    setattr(b, "_confirm", False),
+                    b.configure(text="🗑 Reset statistics", fg=T["muted"])
+                ) if b.winfo_exists() else None)
+            else:
+                # second click → popup with "No" as default
+                dlg = tk.Toplevel(win)
+                dlg.title("Confirm reset")
+                dlg.configure(bg=T["bg"])
+                dlg.attributes("-topmost", True)
+                dlg.resizable(False, False)
+                dlg.grab_set()
+                font_n = (self.cfg.get("ui_font","Segoe UI Variable"), 9)
+                font_b = (self.cfg.get("ui_font","Segoe UI Variable"), 9, "bold")
+                tk.Label(dlg, text="Reset ALL pomodoro statistics?\nThis cannot be undone.",
+                    bg=T["bg"], fg=T["text"], font=font_n,
+                    padx=20, pady=14, justify="center").pack()
+                bf = tk.Frame(dlg, bg=T["bg"]); bf.pack(pady=(0,12))
+                def _do_reset():
+                    self.cfg["pomo_total_work_secs"]  = 0
+                    self.cfg["pomo_total_break_secs"] = 0
+                    self.cfg["pomo_daily"] = {}
+                    save_config(self.cfg)
+                    dlg.destroy(); win.destroy()
+                    self._open_pomo_settings()
+                yes_btn = tk.Button(bf, text="Yes, reset", command=_do_reset,
+                    bg="#e05c5c", fg="#ffffff", relief="flat",
+                    font=font_n, padx=10, pady=4, cursor="hand2")
+                yes_btn.pack(side="left", padx=(0,8))
+                no_btn = tk.Button(bf, text="No, keep", command=dlg.destroy,
+                    bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+                    font=font_b, padx=10, pady=4, cursor="hand2")
+                no_btn.pack(side="left")
+                no_btn.focus_set()  # "No" is focused/highlighted by default
+                dlg.bind("<Return>", lambda e: dlg.destroy())
+                dlg.bind("<Escape>", lambda e: dlg.destroy())
+                # center on screen
+                dlg.update_idletasks()
+                sw = dlg.winfo_screenwidth()
+                sh = dlg.winfo_screenheight()
+                dlg.geometry(f"320x150+{(sw-320)//2}+{(sh-150)//2}")
+        _reset_btn = tk.Button(inner, text="🗑 Reset statistics", command=_reset_stats,
             bg=T["bg"], fg=T["muted"], relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
             padx=8, pady=3, cursor="hand2",
-            activebackground=T["item_hover"]).pack(pady=(0,10))
+            activebackground=T["item_hover"])
+        _reset_btn.pack(pady=(0,10))
+        _reset_btn._confirm = False
+        _reset_btn_ref[0] = _reset_btn
 
 
     def run(self):
