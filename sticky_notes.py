@@ -1114,57 +1114,6 @@ class App:
         pf = tk.Frame(f, bg=T["bg"]); pf.pack(fill="x")
         pf.columnconfigure(1, weight=1)
         rows_p = [
-            ("💼 Work time:",     _fmt_dur(work_secs),  self.cfg.get("pomo_work_color","#e05c5c")),
-            ("☕ Break time:",    _fmt_dur(break_secs), self.cfg.get("pomo_break_color","#4caf88")),
-            ("🕐 Total tracked:", _fmt_dur(total_secs), T["text"]),
-        ]
-        for i,(lbl_t,val_t,col) in enumerate(rows_p):
-            tk.Label(pf,text=lbl_t,bg=T["bg"],fg=T["muted"],
-                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
-                anchor="w").grid(row=i,column=0,sticky="w",pady=1)
-            tk.Label(pf,text=val_t,bg=T["bg"],fg=col,
-                font=(self.cfg.get("ui_font","Segoe UI Variable"),8,"bold"),
-                anchor="e").grid(row=i,column=1,sticky="e",pady=1)
-        if total_secs > 0:
-            work_pct = int(100 * work_secs / total_secs)
-            tk.Label(f,text=f"Work ratio: {work_pct}%  |  Break: {100-work_pct}%",
-                bg=T["bg"],fg=T["muted"],
-                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),pady=2).pack(anchor="w")
-            bar_c = tk.Canvas(f,bg=T["bg"],height=10,bd=0,highlightthickness=0)
-            bar_c.pack(fill="x",pady=(2,6))
-            def _draw_pbar(e=None, wc=work_secs, tc=total_secs):
-                bw = bar_c.winfo_width() or 200
-                bar_c.delete("all")
-                ww = int(bw * wc / tc)
-                if ww > 0:
-                    bar_c.create_rectangle(0,0,ww,10,
-                        fill=self.cfg.get("pomo_work_color","#e05c5c"),outline="")
-                if ww < bw:
-                    bar_c.create_rectangle(ww,0,bw,10,
-                        fill=self.cfg.get("pomo_break_color","#4caf88"),outline="")
-            bar_c.bind("<Configure>", _draw_pbar)
-            self.root.after(120, _draw_pbar)
-        else:
-            tk.Label(f,text="Start the timer to track focus time ⏱",
-                bg=T["bg"],fg=T["muted"],
-                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),pady=4).pack(anchor="w")
-
-        # ── Pomodoro statistics ────────────────────────────────────────────
-        tk.Frame(f,bg=T["separator"],height=1).pack(fill="x",pady=(4,8))
-        tk.Label(f,text="⏱  Focus Time",bg=T["bg"],fg=T["text"],
-            font=(self.cfg.get("ui_font","Segoe UI Variable"),10,"bold")).pack(anchor="w",pady=(0,4))
-
-        work_secs  = self.cfg.get("pomo_total_work_secs", 0)
-        break_secs = self.cfg.get("pomo_total_break_secs", 0)
-        total_secs = work_secs + break_secs
-
-        def _fmt_dur(s):
-            h = s // 3600; m = (s % 3600) // 60
-            return f"{h}h {m:02d}m" if h > 0 else f"{m}m {s%60:02d}s"
-
-        pf = tk.Frame(f, bg=T["bg"]); pf.pack(fill="x")
-        pf.columnconfigure(1, weight=1)
-        rows_p = [
             ("💼 Work time:",   _fmt_dur(work_secs),  self.cfg.get("pomo_work_color","#e05c5c")),
             ("☕ Break time:",  _fmt_dur(break_secs), self.cfg.get("pomo_break_color","#4caf88")),
             ("🕐 Total tracked:", _fmt_dur(total_secs), T["text"]),
@@ -1207,13 +1156,13 @@ class App:
 
         # color bands: work seconds thresholds
         _HMAP_BANDS = [
-            (0,         T["item_bg"]),       # 0 min  – blank/theme default
-            (1800,      "#e05c5c"),           # <30 min – red
-            (3600,      "#f4a623"),           # <1 h   – orange
-            (7200,      "#f4e040"),           # <2 h   – yellow
-            (14400,     "#4caf88"),           # <4 h   – green
-            (21600,     "#29b6d8"),           # <6 h   – cyan/blue
-            (999999,    "#a855f7"),           # ≥6 h   – purple
+            (0,         T["item_bg"]),       # 0 s    – no work, blank
+            (1,         "#e05c5c"),           # 1s–30m – red (any work up to 30 min)
+            (1800,      "#f4a623"),           # 30m–1h – orange
+            (3600,      "#f4e040"),           # 1h–2h  – yellow
+            (7200,      "#4caf88"),           # 2h–4h  – green
+            (14400,     "#29b6d8"),           # 4h–6h  – cyan/blue
+            (21600,     "#a855f7"),           # ≥6h    – purple
         ]
         def _day_color(secs):
             for threshold, color in reversed(_HMAP_BANDS):
@@ -1254,13 +1203,15 @@ class App:
             color    = _day_color(w_secs)
             tip_text = (f"{day_key}\n💼 {w_secs//60}m work\n☕ {b_secs//60}m break"
                         if (w_secs or b_secs) else day_key)
-            sq = tk.Frame(heat_f, bg=color, width=16, height=16,
-                relief="flat", bd=1)
+            sq = tk.Canvas(heat_f, width=18, height=18, bd=0,
+                highlightthickness=1,
+                highlightbackground=T["separator"],
+                highlightcolor=T["separator"])
+            sq.create_rectangle(0, 0, 18, 18, fill=color, outline="")
             sq.grid(row=row, column=col, padx=1, pady=1)
-            sq.grid_propagate(False)
             # tooltip on hover
             tip_lbl = [None]
-            def _enter_sq(e, t=tip_text, s=sq):
+            def _enter_sq(e, t=tip_text):
                 tl = tk.Toplevel(self.root)
                 tl.overrideredirect(True)
                 tl.attributes("-topmost", True)
