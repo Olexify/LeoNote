@@ -43,7 +43,7 @@ DEFAULT_CONFIG = {
 }
 
 THEMES = {
-    "yellow":       {"bg":"#fdf3c0","header_bg":"#ffd257","text":"#2c1a00","muted":"#7d5c0f","entry_bg":"#fef8d8","entry_fg":"#2c1a00","btn_bg":"#e8b800","btn_fg":"#2c1a00","btn_hover":"#d4a500","check_done":"#2e7d00","separator":"#f0d040","item_bg":"#fef6ca","item_hover":"#f9e870","tab_bg":"#fcd979","archive":"#a05010","close_hover":"#ef4444","low":"#1a5fc4","medium":"#d96500","high":"#c00000"},
+    "yellow":       {"bg":"#fef9d0","header_bg":"#f9e000","text":"#2c1a00","muted":"#7d5c0f","entry_bg":"#fffce0","entry_fg":"#2c1a00","btn_bg":"#f5cc00","btn_fg":"#2c1a00","btn_hover":"#e0b800","check_done":"#2e7d00","separator":"#f7e040","item_bg":"#fefad8","item_hover":"#fdf180","tab_bg":"#f9e840","archive":"#a05010","close_hover":"#ef4444","low":"#1a5fc4","medium":"#d96500","high":"#c00000"},
     "dark":         {"bg":"#1c1b19","header_bg":"#27251f","text":"#e7e5e4","muted":"#a8a29e","entry_bg":"#27251f","entry_fg":"#e7e5e4","btn_bg":"#3f3d38","btn_fg":"#e7e5e4","btn_hover":"#4f4c47","check_done":"#4f98a3","separator":"#393836","item_bg":"#201f1d","item_hover":"#2d2c2a","tab_bg":"#2d2c2a","archive":"#d6a547","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
     "light":        {"bg":"#f7f6f2","header_bg":"#f0ede8","text":"#28251d","muted":"#6b7280","entry_bg":"#ffffff","entry_fg":"#28251d","btn_bg":"#e6e4df","btn_fg":"#28251d","btn_hover":"#dcd9d5","check_done":"#437a22","separator":"#dcd9d5","item_bg":"#fafaf8","item_hover":"#f0ede8","tab_bg":"#ece8e1","archive":"#a16207","close_hover":"#ef4444","low":"#2563eb","medium":"#d97706","high":"#dc2626"},
     "sakura":       {"bg":"#ffeef5","header_bg":"#ffc9dd","text":"#4a1f2d","muted":"#8b5d6b","entry_bg":"#fff7fa","entry_fg":"#4a1f2d","btn_bg":"#ffb3cf","btn_fg":"#4a1f2d","btn_hover":"#ff9fc2","check_done":"#22c55e","separator":"#f8b4c9","item_bg":"#fff7fa","item_hover":"#ffe4ef","tab_bg":"#ffe0ec","archive":"#be185d","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
@@ -313,6 +313,9 @@ class App:
         self.cfg.setdefault("pomo_total_work_secs", 0)
         self.cfg.setdefault("pomo_total_break_secs", 0)
         # pomodoro runtime state (not persisted between sessions)
+        # filter state - persists across re-renders
+        self._archive_filters = {"q": "", "priority": "all", "date": "all"}
+        self._search_filters  = {"priority": "all", "status": "all", "date": "all"}
         self._pomo_running = False
         self._pomo_phase   = "work"   # "work" or "break"
         self._pomo_secs    = self.cfg["pomo_work_mins"] * 60
@@ -802,7 +805,7 @@ class App:
         if   self.current_tab=="active":  self._render_active(T)
         elif self.current_tab=="archive": self._render_archive(T)
         elif self.current_tab=="trash":   self._render_trash(T)
-        elif self.current_tab=="search":  self._render_pool(self._search_pool(), T, searching=True)
+        elif self.current_tab=="search":  self._render_search(T)
         elif self.current_tab=="stats":   self._render_stats(T)
         elif self.current_tab=="docs":    self._render_docs(T)
         elif self.current_tab=="habits":  self._render_habits(T)
@@ -843,15 +846,105 @@ class App:
 
     # ── archive render (feat 3 – unsolve + delete) ────────────────────────────
     def _render_archive(self, T):
-        pool = sorted(self._archived_tasks(), key=lambda t:t.get("completed_at",""), reverse=True)
-        if not pool:
-            tk.Label(self.task_frame,text="Archive is empty.",
-                bg=T["bg"],fg=T["muted"],
+        import datetime as _dt
+        all_pool = sorted(self._archived_tasks(),
+                          key=lambda t: t.get("completed_at",""), reverse=True)
+
+        # ── Filter bar ─────────────────────────────────────────────────────
+        fbar = tk.Frame(self.task_frame, bg=T["header_bg"], padx=6, pady=4)
+        fbar.pack(fill="x", pady=(0,4))
+        fn = (self.cfg.get("ui_font","Segoe UI Variable"), 8)
+
+        # search input
+        af = self._archive_filters
+        q_var = tk.StringVar(value=af["q"])
+        q_ent = tk.Entry(fbar, textvariable=q_var, bg=T["entry_bg"], fg=T["entry_fg"],
+            insertbackground=T["entry_fg"], relief="flat",
+            font=fn, width=14, bd=0, highlightthickness=1,
+            highlightbackground=T["separator"], highlightcolor=T["check_done"])
+        q_ent.pack(side="left", padx=(0,6), ipady=3)
+        tk.Label(fbar, text="🔍", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(0,2))
+
+        # priority filter
+        prio_var = tk.StringVar(value=af["priority"])
+        tk.Label(fbar, text="Priority:", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(6,2))
+        prio_menu = tk.OptionMenu(fbar, prio_var, "all", "high", "medium", "low", "none")
+        prio_menu.configure(bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+            activebackground=T["btn_hover"], highlightthickness=0, font=fn, padx=4, pady=2)
+        prio_menu["menu"].configure(bg=T["entry_bg"], fg=T["entry_fg"], font=fn)
+        prio_menu.pack(side="left", padx=(0,6))
+
+        # date filter
+        date_var = tk.StringVar(value=af["date"])
+        tk.Label(fbar, text="Date:", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(6,2))
+        date_menu = tk.OptionMenu(fbar, date_var, "all", "today", "week", "month")
+        date_menu.configure(bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+            activebackground=T["btn_hover"], highlightthickness=0, font=fn, padx=4, pady=2)
+        date_menu["menu"].configure(bg=T["entry_bg"], fg=T["entry_fg"], font=fn)
+        date_menu.pack(side="left", padx=(0,6))
+
+        # result count label
+        count_lbl = tk.Label(fbar, text="", bg=T["header_bg"], fg=T["muted"], font=fn)
+        count_lbl.pack(side="right")
+
+        def _apply_filters(*_):
+            q  = q_var.get().strip().lower()
+            pr = prio_var.get()
+            dt = date_var.get()
+            af["q"] = q; af["priority"] = pr; af["date"] = dt
+            now = _dt.datetime.now()
+            cutoff = None
+            if dt == "today":  cutoff = now - _dt.timedelta(days=1)
+            elif dt == "week": cutoff = now - _dt.timedelta(days=7)
+            elif dt == "month":cutoff = now - _dt.timedelta(days=30)
+            filtered = []
+            for t in all_pool:
+                if q and q not in t.get("text","").lower(): continue
+                if pr != "all" and t.get("priority","none") != pr: continue
+                if cutoff:
+                    ca = t.get("completed_at","")
+                    if ca:
+                        try:
+                            td = _dt.datetime.fromisoformat(ca)
+                            if td < cutoff: continue
+                        except Exception: pass
+                    else: continue
+                filtered.append(t)
+            # remove old task rows (keep filter bar)
+            for w in self.task_frame.winfo_children():
+                if w is not fbar: w.destroy()
+            count_lbl.configure(text=f"{len(filtered)} tasks")
+            if not filtered:
+                tk.Label(self.task_frame, text="No matching tasks.",
+                    bg=T["bg"], fg=T["muted"],
+                    font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
+                    justify="center", pady=20).pack(fill="x")
+            else:
+                for task in filtered:
+                    self._task_row(task, archived=True)
+            self._update_scroll()
+            # rebind scroll on new widgets
+            self.root.after(30, lambda: self._bind_ctrl_wheel_recursive(self.task_frame))
+
+        q_var.trace_add("write", _apply_filters)
+        prio_var.trace_add("write", _apply_filters)
+        date_var.trace_add("write", _apply_filters)
+
+        # middle-mouse click to scroll to top/bottom
+        def _mid_scroll(e):
+            self.canvas.yview_moveto(0.0 if self.canvas.yview()[0] > 0.3 else 1.0)
+        self.canvas.bind("<Button-2>", _mid_scroll)
+        self.task_frame.bind("<Button-2>", _mid_scroll)
+
+        if not all_pool:
+            count_lbl.configure(text="0 tasks")
+            tk.Label(self.task_frame, text="Archive is empty.",
+                bg=T["bg"], fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
-                justify="center",pady=28).pack(fill="x")
+                justify="center", pady=28).pack(fill="x")
             return
-        for task in pool:
-            self._task_row(task, archived=True)
+
+        _apply_filters()
 
 
 
@@ -1037,6 +1130,193 @@ class App:
             save_docs(docs + deleted)
             if self.current_tab == "docs": self._render_tasks()
 
+    def _show_calendar_picker(self, parent_widget, initial_date, on_select):
+        """Lightweight calendar popup. on_select(date) called with datetime.date."""
+        import datetime as _dt
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg=self.T["header_bg"])
+        T = self.T
+        fn = (self.cfg.get("ui_font", "Segoe UI Variable"), 9)
+        fnb = (self.cfg.get("ui_font", "Segoe UI Variable"), 9, "bold")
+
+        cur = [initial_date or _dt.date.today()]
+
+        frame = tk.Frame(win, bg=T["header_bg"], padx=4, pady=4)
+        frame.pack()
+
+        def _build():
+            for w in frame.winfo_children():
+                w.destroy()
+            y, m = cur[0].year, cur[0].month
+            # header row
+            hdr = tk.Frame(frame, bg=T["header_bg"]); hdr.pack(fill="x", pady=(0,4))
+            tk.Button(hdr, text="◀", command=lambda: _shift(-1),
+                bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn,
+                padx=6, pady=2, cursor="hand2").pack(side="left")
+            import calendar as _cal
+            tk.Label(hdr, text=f"{_cal.month_name[m]} {y}",
+                bg=T["header_bg"], fg=T["text"], font=fnb).pack(side="left", expand=True)
+            tk.Button(hdr, text="▶", command=lambda: _shift(1),
+                bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn,
+                padx=6, pady=2, cursor="hand2").pack(side="right")
+            # day headers
+            gf = tk.Frame(frame, bg=T["header_bg"]); gf.pack()
+            for i, d in enumerate(["Mo","Tu","We","Th","Fr","Sa","Su"]):
+                tk.Label(gf, text=d, bg=T["header_bg"], fg=T["muted"],
+                    font=fn, width=3).grid(row=0, column=i, padx=1)
+            # day buttons
+            cal = _cal.monthcalendar(y, m)
+            today = _dt.date.today()
+            for r, week in enumerate(cal):
+                for c, day in enumerate(week):
+                    if day == 0:
+                        tk.Label(gf, text="", bg=T["header_bg"], width=3).grid(row=r+1, column=c)
+                    else:
+                        d = _dt.date(y, m, day)
+                        is_sel = (d == cur[0])
+                        is_today = (d == today)
+                        bg = T["check_done"] if is_sel else (T["btn_hover"] if is_today else T["item_bg"])
+                        fg = "#ffffff" if is_sel else T["text"]
+                        def _click(date=d):
+                            cur[0] = date
+                            on_select(date)
+                            win.destroy()
+                        tk.Button(gf, text=str(day), command=_click,
+                            bg=bg, fg=fg, relief="flat", font=fn,
+                            width=3, pady=2, cursor="hand2",
+                            activebackground=T["btn_hover"]).grid(row=r+1, column=c, padx=1, pady=1)
+            # clear button
+            bf = tk.Frame(frame, bg=T["header_bg"]); bf.pack(fill="x", pady=(4,0))
+            tk.Button(bf, text="✕ Clear", command=lambda: (on_select(None), win.destroy()),
+                bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn,
+                padx=8, pady=2, cursor="hand2").pack(side="left")
+            tk.Button(bf, text="Today", command=lambda: (on_select(today), win.destroy()),
+                bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn,
+                padx=8, pady=2, cursor="hand2").pack(side="right")
+
+        def _shift(delta):
+            import calendar as _cal2
+            y, m = cur[0].year, cur[0].month
+            m += delta
+            if m > 12: m = 1; y += 1
+            elif m < 1: m = 12; y -= 1
+            last = _cal2.monthrange(y, m)[1]
+            cur[0] = cur[0].replace(year=y, month=m, day=min(cur[0].day, last))
+            _build()
+
+        _build()
+        # position near parent widget
+        win.update_idletasks()
+        try:
+            wx = parent_widget.winfo_rootx()
+            wy = parent_widget.winfo_rooty() + parent_widget.winfo_height() + 2
+        except Exception:
+            wx, wy = 100, 100
+        win.geometry(f"+{wx}+{wy}")
+        win.focus_set()
+        win.bind("<FocusOut>", lambda e: win.destroy() if win.winfo_exists() else None)
+        win.bind("<Escape>", lambda e: win.destroy())
+
+
+    def _render_search(self, T):
+        import datetime as _dt
+        sf = self._search_filters
+
+        # ── Filter bar ──────────────────────────────────────────────────────
+        fbar = tk.Frame(self.task_frame, bg=T["header_bg"], padx=6, pady=4)
+        fbar.pack(fill="x", pady=(0,4))
+        fn = (self.cfg.get("ui_font","Segoe UI Variable"), 8)
+
+        # priority filter
+        prio_var = tk.StringVar(value=sf["priority"])
+        tk.Label(fbar, text="Priority:", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(0,2))
+        prio_menu = tk.OptionMenu(fbar, prio_var, "all", "high", "medium", "low", "none")
+        prio_menu.configure(bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+            activebackground=T["btn_hover"], highlightthickness=0, font=fn, padx=4, pady=2)
+        prio_menu["menu"].configure(bg=T["entry_bg"], fg=T["entry_fg"], font=fn)
+        prio_menu.pack(side="left", padx=(0,8))
+
+        # status filter
+        status_var = tk.StringVar(value=sf["status"])
+        tk.Label(fbar, text="Status:", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(0,2))
+        status_menu = tk.OptionMenu(fbar, status_var, "all", "active", "resolved")
+        status_menu.configure(bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+            activebackground=T["btn_hover"], highlightthickness=0, font=fn, padx=4, pady=2)
+        status_menu["menu"].configure(bg=T["entry_bg"], fg=T["entry_fg"], font=fn)
+        status_menu.pack(side="left", padx=(0,8))
+
+        # From / To date pickers (filters by completed_at for resolved tasks)
+        sd = [sf.get("date_from"), sf.get("date_to")]
+        tk.Label(fbar, text="From:", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(0,2))
+        s_from_btn = tk.Button(fbar, text=str(sd[0]) if sd[0] else "any",
+            bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn, padx=6, pady=2, cursor="hand2",
+            activebackground=T["btn_hover"])
+        s_from_btn.pack(side="left", padx=(0,4))
+        tk.Label(fbar, text="To:", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(2,2))
+        s_to_btn = tk.Button(fbar, text=str(sd[1]) if sd[1] else "any",
+            bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn, padx=6, pady=2, cursor="hand2",
+            activebackground=T["btn_hover"])
+        s_to_btn.pack(side="left", padx=(0,8))
+
+        count_lbl = tk.Label(fbar, text="", bg=T["header_bg"], fg=T["muted"], font=fn)
+        count_lbl.pack(side="right")
+
+        base_pool = self._search_pool()
+
+        def _apply(*_):
+            pr = prio_var.get()
+            st = status_var.get()
+            sf["priority"] = pr; sf["status"] = st
+            sf["date_from"] = sd[0]; sf["date_to"] = sd[1]
+            filtered = []
+            for t in base_pool:
+                if pr != "all" and t.get("priority","none") != pr: continue
+                if st == "active" and t.get("done"): continue
+                if st == "resolved" and not t.get("done"): continue
+                if (sd[0] or sd[1]) and t.get("done"):
+                    ca = t.get("completed_at","")
+                    if ca:
+                        try:
+                            td = _dt.datetime.fromisoformat(ca).date()
+                            if sd[0] and td < sd[0]: continue
+                            if sd[1] and td > sd[1]: continue
+                        except Exception: pass
+                    else: continue
+                filtered.append(t)
+            for w in self.task_frame.winfo_children():
+                if w is not fbar: w.destroy()
+            count_lbl.configure(text=f"{len(filtered)} results")
+            if not filtered:
+                tk.Label(self.task_frame, text="No results match filters.",
+                    bg=T["bg"], fg=T["muted"],
+                    font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
+                    justify="center", pady=20).pack(fill="x")
+            else:
+                for task in filtered:
+                    self._task_row(task, searching=True)
+            self._update_scroll()
+            self.root.after(30, lambda: self._bind_ctrl_wheel_recursive(self.task_frame))
+
+        def _pick_s_from():
+            self._show_calendar_picker(s_from_btn, sd[0],
+                lambda d: (sd.__setitem__(0, d),
+                           s_from_btn.configure(text=str(d) if d else "any"),
+                           _apply()))
+        def _pick_s_to():
+            self._show_calendar_picker(s_to_btn, sd[1],
+                lambda d: (sd.__setitem__(1, d),
+                           s_to_btn.configure(text=str(d) if d else "any"),
+                           _apply()))
+        s_from_btn.configure(command=_pick_s_from)
+        s_to_btn.configure(command=_pick_s_to)
+
+        prio_var.trace_add("write", _apply)
+        status_var.trace_add("write", _apply)
+        _apply()
+
+
     def _render_pool(self, pool, T, trashed=False, searching=False):
         if not pool:
             if trashed:    msg = "Bin is empty."
@@ -1110,8 +1390,16 @@ class App:
         tk.Label(f,text="⏱  Focus Time",bg=T["bg"],fg=T["text"],
             font=(self.cfg.get("ui_font","Segoe UI Variable"),10,"bold")).pack(anchor="w",pady=(0,4))
 
-        work_secs  = self.cfg.get("pomo_total_work_secs", 0)
-        break_secs = self.cfg.get("pomo_total_break_secs", 0)
+        import datetime as _dt2
+        _today_key = _dt2.date.today().isoformat()
+        _today_data = self.cfg.get("pomo_daily", {}).get(_today_key, {})
+        work_secs  = _today_data.get("work", 0)
+        break_secs = _today_data.get("break", 0)
+        # add current running session if timer is active today
+        if getattr(self, "_pomo_running", False):
+            elapsed = self.cfg.get("pomo_work_mins",25)*60 - getattr(self,"_pomo_secs",0)
+            if getattr(self,"_pomo_phase","work") == "work":
+                work_secs = max(work_secs, work_secs)  # already accumulated in daily
         total_secs = work_secs + break_secs
 
         def _fmt_dur(s):
@@ -1156,6 +1444,34 @@ class App:
                 bg=T["bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),pady=4).pack(anchor="w")
 
+        # ── All-time totals (computed from daily data) ──────────────────────
+        tk.Frame(f,bg=T["separator"],height=1).pack(fill="x",pady=(6,4))
+        tk.Label(f,text="📊  All-Time Totals",bg=T["bg"],fg=T["text"],
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold")).pack(anchor="w",pady=(0,4))
+
+        _all_daily = self.cfg.get("pomo_daily", {})
+        total_work  = sum(v.get("work", 0)  for v in _all_daily.values())
+        total_break = sum(v.get("break", 0) for v in _all_daily.values())
+        total_all   = total_work + total_break
+
+        def _fmt_full(s):
+            h = s // 3600; m = (s % 3600) // 60
+            return f"{h}h {m:02d}m" if h else f"{m}m {s%60:02d}s"
+
+        tot_f = tk.Frame(f, bg=T["bg"]); tot_f.pack(fill="x")
+        tot_f.columnconfigure(1, weight=1)
+        for i,(lbl_t,val_t,col) in enumerate([
+            ("💼 Total work:",   _fmt_full(total_work),  self.cfg.get("pomo_work_color","#e05c5c")),
+            ("☕ Total break:",  _fmt_full(total_break), self.cfg.get("pomo_break_color","#4caf88")),
+            ("🕐 Grand total:", _fmt_full(total_all),   T["text"]),
+        ]):
+            tk.Label(tot_f,text=lbl_t,bg=T["bg"],fg=T["muted"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+                anchor="w").grid(row=i,column=0,sticky="w",pady=1)
+            tk.Label(tot_f,text=val_t,bg=T["bg"],fg=col,
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8,"bold"),
+                anchor="e").grid(row=i,column=1,sticky="e",pady=1)
+
         # ── Daily activity heatmap ─────────────────────────────────────────
         tk.Frame(f,bg=T["separator"],height=1).pack(fill="x",pady=(6,6))
 
@@ -1167,7 +1483,7 @@ class App:
             (0,         T["item_bg"]),
             (1,         "#e05c5c"),
             (1800,      "#f4a623"),
-            (3600,      "#f4e040"),
+            (3600,      "#ffe100"),
             (7200,      "#4caf88"),
             (14400,     "#29b6d8"),
             (21600,     "#a855f7"),
@@ -1190,7 +1506,7 @@ class App:
         # legend
         leg_f = tk.Frame(f, bg=T["bg"]); leg_f.pack(anchor="w", pady=(0,4))
         for txt, col in [("None",T["item_bg"]),("<30m","#e05c5c"),("<1h","#f4a623"),
-                         ("<2h","#f4e040"),("<4h","#4caf88"),("<6h","#29b6d8"),("6h+","#a855f7")]:
+                         ("<2h","#ffe100"),("<4h","#4caf88"),("<6h","#29b6d8"),("6h+","#a855f7")]:
             li = tk.Frame(leg_f, bg=T["bg"]); li.pack(side="left", padx=(0,6))
             tk.Frame(li, bg=col, width=10, height=10).pack(side="left", padx=(0,2))
             tk.Label(li, text=txt, bg=T["bg"], fg=T["muted"],
@@ -1203,6 +1519,7 @@ class App:
                 heat_container[0].destroy()
             days = [(today - datetime.timedelta(days=i)) for i in range(n_days-1, -1, -1)]
             COLS = 10 if n_days <= 60 else 26
+            SQ   = 18 if n_days <= 60 else 14
             heat_f = tk.Frame(f, bg=T["bg"]); heat_f.pack(anchor="w", pady=(0,4))
             heat_container[0] = heat_f
             for i, day in enumerate(days):
@@ -1214,11 +1531,11 @@ class App:
                 color  = _day_color(w_s)
                 tip    = (f"{dk}\n\U0001f4bc {w_s//60}m work\n\u2615 {b_s//60}m break"
                           if (w_s or b_s) else dk)
-                sq = tk.Canvas(heat_f, width=18, height=18, bd=0,
+                sq = tk.Canvas(heat_f, width=SQ, height=SQ, bd=0,
                     highlightthickness=1,
                     highlightbackground=T["separator"],
                     highlightcolor=T["separator"])
-                sq.create_rectangle(0, 0, 18, 18, fill=color, outline="")
+                sq.create_rectangle(0, 0, SQ, SQ, fill=color, outline="")
                 sq.grid(row=r, column=c, padx=1, pady=1)
                 tip_lbl = [None]
                 def _enter(e, t=tip):
@@ -1251,6 +1568,138 @@ class App:
                 _hmap_title_lbl.configure(text="📅  Daily Work Heatmap (last 60 days)")
                 exp_btn.configure(text="⊞ 365d")
             _build_heatmap(_hmap_days[0])
+        _all_days_win = [None]
+        def _open_all_days():
+            if _all_days_win[0] and _all_days_win[0].winfo_exists():
+                _all_days_win[0].lift(); _all_days_win[0].focus_set(); return
+            aw = tk.Toplevel(self.root)
+            _all_days_win[0] = aw
+            aw.title("All Tracked Days")
+            aw.configure(bg=T["bg"])
+            aw.attributes("-topmost", True)
+            # restore saved geometry
+            _ad_geo = self.cfg.get("all_days_geo", "540x460")
+            try: aw.geometry(_ad_geo)
+            except Exception: aw.geometry("540x460")
+            aw.minsize(360, 260)
+            def _save_geo(e=None):
+                if aw.winfo_exists():
+                    self.cfg["all_days_geo"] = aw.geometry()
+            aw.bind("<Configure>", _save_geo)
+
+            # title + toggle row
+            top_row = tk.Frame(aw, bg=T["bg"]); top_row.pack(fill="x", padx=8, pady=(8,0))
+            tk.Label(top_row, text="📅  All Tracked Days",
+                bg=T["bg"], fg=T["text"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),11,"bold")).pack(side="left")
+            _view_mode = [self.cfg.get("all_days_view","list")]
+            toggle_btn = tk.Button(top_row, text="⊞ Squares" if _view_mode[0]=="list" else "☰ List",
+                bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+                padx=8, pady=2, cursor="hand2", activebackground=T["btn_hover"])
+            toggle_btn.pack(side="right")
+            tk.Frame(aw, bg=T["separator"], height=1).pack(fill="x", pady=(4,0))
+
+            # scrollable area
+            cf = tk.Frame(aw, bg=T["bg"]); cf.pack(fill="both", expand=True)
+            ac = tk.Canvas(cf, bg=T["bg"], bd=0, highlightthickness=0)
+            asb = ttk.Scrollbar(cf, orient="vertical", command=ac.yview,
+                style="LeSticky.Vertical.TScrollbar")
+            ac.configure(yscrollcommand=asb.set)
+            asb.pack(side="right", fill="y"); ac.pack(side="left", fill="both", expand=True)
+            inner = [tk.Frame(ac, bg=T["bg"])]
+            aw_cw = [ac.create_window(0, 0, window=inner[0], anchor="nw")]
+            inner[0].bind("<Configure>", lambda e: ac.configure(scrollregion=ac.bbox("all")))
+            ac.bind("<Configure>", lambda e: ac.itemconfig(aw_cw[0], width=e.width))
+            for w2 in (ac, inner[0]):
+                w2.bind("<MouseWheel>", lambda e: ac.yview_scroll(-1 if e.delta>0 else 1, "units"))
+
+            all_days_data = self.cfg.get("pomo_daily", {})
+            all_days_sorted = sorted(all_days_data.keys(), reverse=True)
+            fn_d = (self.cfg.get("ui_font","Segoe UI Variable"), 9)
+            wc = self.cfg.get("pomo_work_color","#e05c5c")
+            bc = self.cfg.get("pomo_break_color","#4caf88")
+
+            def _rebuild_inner():
+                if inner[0].winfo_exists(): inner[0].destroy()
+                new_inner = tk.Frame(ac, bg=T["bg"])
+                inner[0] = new_inner
+                ac.delete(aw_cw[0])
+                aw_cw[0] = ac.create_window(0, 0, window=new_inner, anchor="nw")
+                new_inner.bind("<Configure>", lambda e: ac.configure(scrollregion=ac.bbox("all")))
+                ac.bind("<Configure>", lambda e: ac.itemconfig(aw_cw[0], width=e.width))
+                for w2 in (ac, new_inner):
+                    w2.bind("<MouseWheel>", lambda e: ac.yview_scroll(-1 if e.delta>0 else 1, "units"))
+                if not all_days_sorted:
+                    tk.Label(new_inner, text="No data tracked yet.", bg=T["bg"], fg=T["muted"],
+                        font=fn_d, pady=20).pack()
+                    return
+                if _view_mode[0] == "list":
+                    for dk in all_days_sorted:
+                        dd2 = all_days_data[dk]
+                        ws = dd2.get("work",0); bs = dd2.get("break",0)
+                        if ws==0 and bs==0: continue
+                        row = tk.Frame(new_inner, bg=T["item_bg"], pady=3, padx=8)
+                        row.pack(fill="x", pady=1)
+                        tk.Label(row, text=dk, bg=T["item_bg"], fg=T["text"],
+                            font=fn_d, width=12, anchor="w").pack(side="left")
+                        tk.Label(row, text=f"💼 {ws//3600}h {(ws%3600)//60:02d}m",
+                            bg=T["item_bg"], fg=wc, font=fn_d).pack(side="left", padx=(8,4))
+                        tk.Label(row, text=f"☕ {bs//3600}h {(bs%3600)//60:02d}m",
+                            bg=T["item_bg"], fg=bc, font=fn_d).pack(side="left", padx=4)
+                else:
+                    # squares view - sorted oldest first for visual grid
+                    sq_days = sorted(all_days_data.keys())
+                    import datetime as _dt3
+                    _td = _dt3.date.today()
+                    COLS = 26
+                    SQ = 18
+                    gf = tk.Frame(new_inner, bg=T["bg"]); gf.pack(anchor="w", padx=8, pady=8)
+                    for i, dk in enumerate(sq_days):
+                        dd2 = all_days_data[dk]
+                        ws = dd2.get("work",0)
+                        bs = dd2.get("break",0)
+                        col = _day_color(ws)
+                        tip = f"{dk}\n💼 {ws//60}m work\n☕ {bs//60}m break" if (ws or bs) else dk
+                        r, c = divmod(i, COLS)
+                        sq = tk.Canvas(gf, width=SQ, height=SQ, bd=0,
+                            highlightthickness=1,
+                            highlightbackground=T["separator"],
+                            highlightcolor=T["separator"])
+                        sq.create_rectangle(0,0,SQ,SQ,fill=col,outline="")
+                        sq.grid(row=r, column=c, padx=1, pady=1)
+                        tl2 = [None]
+                        def _en(e, t=tip):
+                            _tl = tk.Toplevel(self.root); _tl.overrideredirect(True)
+                            _tl.attributes("-topmost",True); _tl.configure(bg=T["header_bg"])
+                            tk.Label(_tl,text=t,bg=T["header_bg"],fg=T["text"],
+                                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
+                                padx=6,pady=3,justify="left").pack()
+                            _tl.geometry(f"+{e.x_root+12}+{e.y_root+12}")
+                            tl2[0]=_tl
+                        def _lv(e):
+                            if tl2[0]:
+                                try: tl2[0].destroy()
+                                except: pass
+                                tl2[0]=None
+                        sq.bind("<Enter>",_en); sq.bind("<Leave>",_lv)
+
+            _rebuild_inner()
+
+            def _toggle_view():
+                _view_mode[0] = "squares" if _view_mode[0]=="list" else "list"
+                self.cfg["all_days_view"] = _view_mode[0]
+                toggle_btn.configure(text="⊞ Squares" if _view_mode[0]=="list" else "☰ List")
+                _rebuild_inner()
+            toggle_btn.configure(command=_toggle_view)
+            aw.focus_set()
+
+        tk.Button(exp_row, text="📋 All days", command=_open_all_days,
+            bg=T["bg"], fg=T["muted"], relief="flat", bd=0,
+            font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
+            padx=4, pady=1, cursor="hand2",
+            activebackground=T["item_hover"]).pack(side="right", padx=(0,6))
+
         exp_btn = tk.Button(exp_row, text="⊞ 365d", command=_toggle_expand,
             bg=T["bg"], fg=T["muted"], relief="flat", bd=0,
             font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
@@ -1258,32 +1707,8 @@ class App:
             activebackground=T["item_hover"])
         exp_btn.pack(side="right")
 
-        # ── All-time totals ────────────────────────────────────────────────
-        tk.Frame(f,bg=T["separator"],height=1).pack(fill="x",pady=(6,4))
-        tk.Label(f,text="📊  All-Time Totals",bg=T["bg"],fg=T["text"],
-            font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold")).pack(anchor="w",pady=(0,4))
 
-        total_work  = self.cfg.get("pomo_total_work_secs",0)
-        total_break = self.cfg.get("pomo_total_break_secs",0)
-        total_all   = total_work + total_break
 
-        def _fmt_full(s):
-            h = s // 3600; m = (s % 3600) // 60
-            return f"{h}h {m:02d}m" if h else f"{m}m {s%60:02d}s"
-
-        tot_f = tk.Frame(f, bg=T["bg"]); tot_f.pack(fill="x")
-        tot_f.columnconfigure(1, weight=1)
-        for i,(lbl_t,val_t,col) in enumerate([
-            ("💼 Total work:",   _fmt_full(total_work),  self.cfg.get("pomo_work_color","#e05c5c")),
-            ("☕ Total break:",  _fmt_full(total_break), self.cfg.get("pomo_break_color","#4caf88")),
-            ("🕐 Grand total:", _fmt_full(total_all),   T["text"]),
-        ]):
-            tk.Label(tot_f,text=lbl_t,bg=T["bg"],fg=T["muted"],
-                font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
-                anchor="w").grid(row=i,column=0,sticky="w",pady=1)
-            tk.Label(tot_f,text=val_t,bg=T["bg"],fg=col,
-                font=(self.cfg.get("ui_font","Segoe UI Variable"),8,"bold"),
-                anchor="e").grid(row=i,column=1,sticky="e",pady=1)
 
     # ── feature 8: Docs hub (square grid, trash, singleton window, inline rename) ─
     # ── helper: scan backup dir and import any .md files not yet in docs ──────
@@ -2562,7 +2987,7 @@ class App:
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9),command=apply_theme)
             r.pack(side="left")
             _SWATCH_COLORS = {
-                "yellow":"#f0c020","dark":"#3f3d38","light":"#e6e4df",
+                "yellow":"#f5cc00","dark":"#3f3d38","light":"#e6e4df",
                 "sakura":"#ffb3cf","mint":"#86efac","ocean":"#93c5fd",
                 "rose":"#fda4af","lavender":"#d8b4fe","peach":"#fdba74",
                 "sky":"#7dd3fc","slate":"#cbd5e1","coral":"#fb7185",
