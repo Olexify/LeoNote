@@ -124,6 +124,11 @@ def _norm(t):
     t.setdefault("priority","none")
     t.setdefault("subtasks",[])
     t.setdefault("deleted", False)
+    t.setdefault("start_date", None)
+    t.setdefault("due_date", None)
+    t.setdefault("due_time", "")
+    t.setdefault("scheduled_jumped", False)
+    t.setdefault("due_jumped", False)
     return t
 
 def load_tasks():
@@ -769,11 +774,24 @@ class App:
     # ── task pools ────────────────────────────────────────────────────────────
     def _active_tasks(self):
         now = now_dt()
+        today = datetime.date.today()
         return [t for t in self.tasks
             if not t.get("deleted") and not (
                 t.get("done") and t.get("completed_at") and
                 now - parse_iso(t["completed_at"]) > datetime.timedelta(days=1)
+            ) and not (
+                t.get("start_date") and
+                not t.get("done") and
+                datetime.date.fromisoformat(t["start_date"]) > today
             )]
+
+    def _scheduled_tasks(self):
+        """Tasks with a future start_date that haven't started yet."""
+        today = datetime.date.today()
+        return [t for t in self.tasks
+            if not t.get("deleted") and not t.get("done") and
+               t.get("start_date") and
+               datetime.date.fromisoformat(t["start_date"]) > today]
 
     def _archived_tasks(self):
         now = now_dt()
@@ -801,6 +819,35 @@ class App:
         if now_ts - getattr(self,"_last_purge_ts",0) > 60:
             self._purge_old_trash(); self._purge_old_doc_trash(); self._purge_old_habit_trash()
             self._last_purge_ts = now_ts
+        # ── Scheduled: jump tasks to top when start_date arrives ────────────
+        import datetime as _dtj
+        _today_j = _dtj.date.today()
+        _changed = False
+        for _t in self.tasks:
+            if _t.get("deleted") or _t.get("done"): continue
+            _sd = _t.get("start_date")
+            _dd = _t.get("due_date")
+            # scheduled task: start_date arrived today → jump to top once
+            if _sd and not _t.get("scheduled_jumped"):
+                _sd_d = _dtj.date.fromisoformat(_sd)
+                if _sd_d <= _today_j:
+                    _t["scheduled_jumped"] = True
+                    self.tasks.remove(_t)
+                    self.tasks.insert(0, _t)
+                    _changed = True
+            # due task: due_date is today → jump to top + bump priority once
+            if _dd and not _t.get("due_jumped"):
+                _dd_d = _dtj.date.fromisoformat(_dd)
+                if _dd_d == _today_j:
+                    _t["due_jumped"] = True
+                    _pri = _t.get("priority","none")
+                    if _pri in ("none","low"): _t["priority"] = "medium"
+                    elif _pri == "medium":     _t["priority"] = "high"
+                    self.tasks.remove(_t)
+                    self.tasks.insert(0, _t)
+                    _changed = True
+        if _changed:
+            save_tasks(self.tasks)
         T = self.T
         if   self.current_tab=="active":  self._render_active(T)
         elif self.current_tab=="archive": self._render_archive(T)
@@ -824,10 +871,11 @@ class App:
 
     # ── feature 1: two-section active list ───────────────────────────────────
     def _render_active(self, T):
-        pool    = self._active_tasks()
+        pool     = self._active_tasks()
+        scheduled = self._scheduled_tasks()
         unsolved = [t for t in pool if not t.get("done")]
         solved   = [t for t in pool if t.get("done")]
-        if not unsolved and not solved:
+        if not unsolved and not solved and not scheduled:
             tk.Label(self.task_frame,text="No tasks yet.\nAdd one above ↑",
                 bg=T["bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
@@ -835,6 +883,15 @@ class App:
             return
         for task in unsolved:
             self._task_row(task)
+        if scheduled:
+            sep2 = tk.Frame(self.task_frame,bg=T["separator"],height=1)
+            sep2.pack(fill="x",pady=4,padx=2)
+            tk.Label(self.task_frame,text="🗓 Scheduled",
+                bg=T["bg"],fg=T["muted"],
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),8,"bold"),
+                anchor="w",padx=6).pack(fill="x")
+            for task in scheduled:
+                self._task_row(task, scheduled=True)
         if solved:
             sep = tk.Frame(self.task_frame,bg=T["separator"],height=1); sep.pack(fill="x",pady=(4,2))
             tk.Label(self.task_frame,text="✓ Completed",
@@ -1130,18 +1187,27 @@ class App:
             save_docs(docs + deleted)
             if self.current_tab == "docs": self._render_tasks()
 
-    def _show_calendar_picker(self, parent_widget, initial_date, on_select):
-        """Lightweight calendar popup. on_select(date) called with datetime.date."""
-        import datetime as _dt
+    def _show_calendar_picker(self, parent_widget, initial_date, on_select,
+                              show_time=False, initial_time=None):
+        """Calendar popup. on_select(date) or on_select((date, "HH:MM")) if show_time."""
+        import datetime as _dt, calendar as _cal
         win = tk.Toplevel(self.root)
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.configure(bg=self.T["header_bg"])
         T = self.T
-        fn = (self.cfg.get("ui_font", "Segoe UI Variable"), 9)
-        fnb = (self.cfg.get("ui_font", "Segoe UI Variable"), 9, "bold")
+        fn  = (self.cfg.get("ui_font","Segoe UI Variable"), 9)
+        fnb = (self.cfg.get("ui_font","Segoe UI Variable"), 9, "bold")
 
-        cur = [initial_date or _dt.date.today()]
+        today = _dt.date.today()
+        # selected = the date the user has actually picked (or initial)
+        selected = [initial_date]          # may be None
+        # view = month being displayed (always a valid date, default today)
+        view = [initial_date or today]
+
+        # time vars
+        hour_var  = tk.StringVar(value=(initial_time or "")[0:2] or "")
+        min_var   = tk.StringVar(value=(initial_time or "")[-2:] or "")
 
         frame = tk.Frame(win, bg=T["header_bg"], padx=4, pady=4)
         frame.pack()
@@ -1149,13 +1215,12 @@ class App:
         def _build():
             for w in frame.winfo_children():
                 w.destroy()
-            y, m = cur[0].year, cur[0].month
-            # header row
+            y, m = view[0].year, view[0].month
+            # header
             hdr = tk.Frame(frame, bg=T["header_bg"]); hdr.pack(fill="x", pady=(0,4))
             tk.Button(hdr, text="◀", command=lambda: _shift(-1),
                 bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn,
                 padx=6, pady=2, cursor="hand2").pack(side="left")
-            import calendar as _cal
             tk.Label(hdr, text=f"{_cal.month_name[m]} {y}",
                 bg=T["header_bg"], fg=T["text"], font=fnb).pack(side="left", expand=True)
             tk.Button(hdr, text="▶", command=lambda: _shift(1),
@@ -1166,48 +1231,73 @@ class App:
             for i, d in enumerate(["Mo","Tu","We","Th","Fr","Sa","Su"]):
                 tk.Label(gf, text=d, bg=T["header_bg"], fg=T["muted"],
                     font=fn, width=3).grid(row=0, column=i, padx=1)
-            # day buttons
-            cal = _cal.monthcalendar(y, m)
-            today = _dt.date.today()
-            for r, week in enumerate(cal):
+            # day grid
+            for r, week in enumerate(_cal.monthcalendar(y, m)):
                 for c, day in enumerate(week):
                     if day == 0:
                         tk.Label(gf, text="", bg=T["header_bg"], width=3).grid(row=r+1, column=c)
+                        continue
+                    d = _dt.date(y, m, day)
+                    # is_sel: only if selected date matches this exact cell's date
+                    is_sel   = (selected[0] is not None and d == selected[0])
+                    is_today = (d == today)
+                    if is_sel:
+                        bg, fg = T["archive"], "#ffffff"
+                    elif is_today:
+                        bg, fg = "#22a34a", "#ffffff"
                     else:
-                        d = _dt.date(y, m, day)
-                        is_sel = (d == cur[0])
-                        is_today = (d == today)
-                        bg = T["check_done"] if is_sel else (T["btn_hover"] if is_today else T["item_bg"])
-                        fg = "#ffffff" if is_sel else T["text"]
-                        def _click(date=d):
-                            cur[0] = date
-                            on_select(date)
-                            win.destroy()
-                        tk.Button(gf, text=str(day), command=_click,
-                            bg=bg, fg=fg, relief="flat", font=fn,
-                            width=3, pady=2, cursor="hand2",
-                            activebackground=T["btn_hover"]).grid(row=r+1, column=c, padx=1, pady=1)
-            # clear button
+                        bg, fg = T["item_bg"], T["text"]
+                    def _click(date=d):
+                        selected[0] = date
+                        _do_select(date)
+                    tk.Button(gf, text=str(day), command=_click,
+                        bg=bg, fg=fg, relief="flat", font=fn,
+                        width=3, pady=2, cursor="hand2",
+                        activebackground=T["btn_hover"]).grid(row=r+1, column=c, padx=1, pady=1)
+            # time row (only for due)
+            if show_time:
+                tf = tk.Frame(frame, bg=T["header_bg"]); tf.pack(fill="x", pady=(4,0))
+                tk.Label(tf, text="⏰ Time:", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(0,4))
+                hv = tk.Spinbox(tf, from_=0, to=23, width=3, format="%02.0f",
+                    textvariable=hour_var, bg=T["entry_bg"], fg=T["entry_fg"],
+                    relief="flat", font=fn, wrap=True)
+                hv.pack(side="left")
+                tk.Label(tf, text=":", bg=T["header_bg"], fg=T["text"], font=fnb).pack(side="left", padx=2)
+                mv = tk.Spinbox(tf, from_=0, to=59, width=3, format="%02.0f",
+                    textvariable=min_var, bg=T["entry_bg"], fg=T["entry_fg"],
+                    relief="flat", font=fn, wrap=True)
+                mv.pack(side="left")
+            # bottom bar
             bf = tk.Frame(frame, bg=T["header_bg"]); bf.pack(fill="x", pady=(4,0))
             tk.Button(bf, text="✕ Clear", command=lambda: (on_select(None), win.destroy()),
                 bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn,
                 padx=8, pady=2, cursor="hand2").pack(side="left")
-            tk.Button(bf, text="Today", command=lambda: (on_select(today), win.destroy()),
+            tk.Button(bf, text="Today", command=lambda: (selected.__setitem__(0, today), _do_select(today)),
                 bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=fn,
                 padx=8, pady=2, cursor="hand2").pack(side="right")
 
+        def _do_select(date):
+            if show_time:
+                try:
+                    h = int(hour_var.get() or 0); m2 = int(min_var.get() or 0)
+                    on_select((date, f"{h:02d}:{m2:02d}"))
+                except Exception:
+                    on_select((date, "00:00"))
+            else:
+                on_select(date)
+            win.destroy()
+
         def _shift(delta):
-            import calendar as _cal2
-            y, m = cur[0].year, cur[0].month
+            y, m = view[0].year, view[0].month
             m += delta
-            if m > 12: m = 1; y += 1
-            elif m < 1: m = 12; y -= 1
-            last = _cal2.monthrange(y, m)[1]
-            cur[0] = cur[0].replace(year=y, month=m, day=min(cur[0].day, last))
+            if m > 12: m, y = 1, y+1
+            elif m < 1: m, y = 12, y-1
+            last = _cal.monthrange(y, m)[1]
+            # update view only; selected stays unchanged
+            view[0] = view[0].replace(year=y, month=m, day=min(view[0].day, last))
             _build()
 
         _build()
-        # position near parent widget
         win.update_idletasks()
         try:
             wx = parent_widget.winfo_rootx()
@@ -1216,7 +1306,22 @@ class App:
             wx, wy = 100, 100
         win.geometry(f"+{wx}+{wy}")
         win.focus_set()
-        win.bind("<FocusOut>", lambda e: win.destroy() if win.winfo_exists() else None)
+        def _on_focus_out(e):
+            if not win.winfo_exists(): return
+            # Only close if focus went to a widget outside this window
+            fw = win.focus_get()
+            if fw is None or str(fw) == str(win) or str(fw).startswith(str(win) + "."):
+                return
+            try:
+                # check if focused widget is a descendant of win
+                w = fw
+                while w:
+                    if str(w) == str(win): return
+                    w = getattr(w, 'master', None)
+            except Exception:
+                pass
+            win.destroy()
+        win.bind("<FocusOut>", _on_focus_out)
         win.bind("<Escape>", lambda e: win.destroy())
 
 
@@ -2484,7 +2589,7 @@ class App:
         e.bind("<FocusOut>", lambda ev: self.root.after(80, finish))
 
     # ── task row ──────────────────────────────────────────────────────────────
-    def _task_row(self, task, archived=False, trashed=False, searching=False):
+    def _task_row(self, task, archived=False, trashed=False, searching=False, scheduled=False):
         T = self.T
         row = tk.Frame(self.task_frame,bg=T["item_bg"],pady=3,padx=4); row.pack(fill="x",pady=2)
         row._task_ref = task
@@ -2564,18 +2669,138 @@ class App:
             if st.get("_editing") and not archived and not trashed and not searching:
                 self.root.after(10, lambda parent=sf,lab=sl,ta=task,sub=st: self._inline_edit_subtask(parent,lab,ta,sub))
 
-        dt      = parse_iso(task["completed_at"]) if is_done and task.get("completed_at") else parse_iso(task["created"])
-        meta_txt = (f"Resolved {fmt_dt(dt)}" if is_done and task.get("completed_at") else f"Created {fmt_dt(dt)}")
-        if pri!="none": meta_txt += f" · {pri.capitalize()}"
-        if trashed and task.get("deleted_at"):
-            remain = max(0, int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(task["deleted_at"]))).total_seconds()//3600))
-            meta_txt += f" · ~{remain}h left"
-        meta = tk.Label(tw,text=meta_txt,bg=T["item_bg"],
-            fg=T["archive"] if archived else T["muted"],
-            font=(self.cfg.get("ui_font","Segoe UI Variable"),8),anchor="w")
-        meta.pack(anchor="w")
+        import datetime as _dtm
+        _WDAY = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
 
-        _paint_widgets = [row,tw,lbl,meta]
+        def _fmt_short(iso_str):
+            """Format YYYY-MM-DD or YYYY-MM-DDTHH:MM to 'Mon 12.07.26'"""
+            try:
+                d = _dtm.date.fromisoformat(iso_str[:10])
+                return f"{_WDAY[d.weekday()]} {d.day:02d}.{d.month:02d}.{str(d.year)[2:]}"
+            except Exception: return iso_str or ""
+
+        def _fmt_short_time(iso_str, time_str):
+            base = _fmt_short(iso_str)
+            return f"{base} {time_str}" if time_str else base
+
+        dt      = parse_iso(task["completed_at"]) if is_done and task.get("completed_at") else parse_iso(task["created"])
+        _has_sd = bool(task.get("start_date"))
+        _has_dd = bool(task.get("due_date"))
+        _show_created = not (_has_sd or _has_dd)
+
+        meta_fg = T["archive"] if archived else T["muted"]
+        fn8 = (self.cfg.get("ui_font","Segoe UI Variable"), 8)
+
+        # Build the meta/date combined row
+        # If start/due not set → everything in one line (meta text + tiny buttons)
+        # If start or due is set → hide created text, show only the date buttons line
+
+        if not archived and not trashed and not searching:
+            # Combined row: created text (if no dates set) + start/due buttons
+            date_row = tk.Frame(tw, bg=T["item_bg"]); date_row.pack(anchor="w", fill="x")
+
+            if _show_created:
+                if is_done and task.get("completed_at"):
+                    meta_txt = f"Resolved {_fmt_short(task['completed_at'])}"
+                else:
+                    _wday = _WDAY[dt.weekday()] if dt else ""
+                    meta_txt = f"{_wday} {fmt_dt(dt)}" if dt else ""
+                if pri!="none": meta_txt += f" · {pri.capitalize()}"
+                if trashed and task.get("deleted_at"):
+                    remain = max(0, int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(task["deleted_at"]))).total_seconds()//3600))
+                    meta_txt += f" · ~{remain}h left"
+                meta = tk.Label(date_row, text=meta_txt, bg=T["item_bg"], fg=meta_fg, font=fn8, anchor="w")
+                meta.pack(side="left", padx=(0,6))
+            else:
+                meta = tk.Label(tw, text="", bg=T["item_bg"])  # invisible placeholder
+        else:
+            date_row = None
+            if _show_created:
+                if is_done and task.get("completed_at"):
+                    meta_txt = f"Resolved {_fmt_short(task['completed_at'])}"
+                else:
+                    _wday = _WDAY[dt.weekday()] if dt else ""
+                    meta_txt = f"{_wday} {fmt_dt(dt)}" if dt else ""
+                if pri!="none": meta_txt += f" · {pri.capitalize()}"
+                if trashed and task.get("deleted_at"):
+                    remain = max(0, int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(task["deleted_at"]))).total_seconds()//3600))
+                    meta_txt += f" · ~{remain}h left"
+                meta = tk.Label(tw, text=meta_txt, bg=T["item_bg"], fg=meta_fg, font=fn8, anchor="w")
+                meta.pack(anchor="w")
+            else:
+                meta = tk.Label(tw, text="", bg=T["item_bg"])
+
+        if not archived and not trashed and not searching:
+
+            def _sd_text(t=task):
+                sd = t.get("start_date")
+                return ("▶ " + _fmt_short(sd)) if sd else "▶"
+            def _dd_text(t=task):
+                dd = t.get("due_date"); dt2 = t.get("due_time","")
+                return ("⏰ " + _fmt_short_time(dd, dt2)) if dd else "⏰"
+
+            sd_set = bool(task.get("start_date"))
+            dd_set = bool(task.get("due_date"))
+
+            sd_btn = tk.Button(date_row, text=_sd_text(),
+                bg=T["item_bg"],
+                fg=T["check_done"] if sd_set else T["muted"],
+                relief="flat", bd=0,
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
+                padx=2, pady=0, cursor="hand2", activebackground=T["item_hover"])
+            sd_btn.pack(side="left", padx=(0,8))
+
+            dd_btn = tk.Button(date_row, text=_dd_text(),
+                bg=T["item_bg"],
+                fg=T["archive"] if dd_set else T["muted"],
+                relief="flat", bd=0,
+                font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
+                padx=2, pady=0, cursor="hand2", activebackground=T["item_hover"])
+            dd_btn.pack(side="left")
+
+            if pri!="none" or trashed:
+                pri_lbl_txt = f" · {pri.capitalize()}" if pri!="none" else ""
+                if trashed and task.get("deleted_at"):
+                    remain = max(0, int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(task["deleted_at"]))).total_seconds()//3600))
+                    pri_lbl_txt += f" · ~{remain}h left"
+                if pri_lbl_txt:
+                    tk.Label(date_row, text=pri_lbl_txt, bg=T["item_bg"], fg=meta_fg,
+                        font=fn8).pack(side="left", padx=(2,0))
+
+            def _pick_start(t=task, b=sd_btn):
+                init = _dtm.date.fromisoformat(t["start_date"]) if t.get("start_date") else None
+                def _on_sel(d):
+                    t["start_date"] = d.isoformat() if d else None
+                    t["scheduled_jumped"] = False
+                    b.configure(text=_sd_text(t),
+                        fg=T["check_done"] if d else T["muted"])
+                    save_tasks(self.tasks)
+                    self._render_tasks()
+                self._show_calendar_picker(b, init, _on_sel)
+
+            def _pick_due(t=task, b=dd_btn):
+                init = _dtm.date.fromisoformat(t["due_date"]) if t.get("due_date") else None
+                init_time = t.get("due_time","")
+                def _on_sel(result):
+                    if result is None:
+                        t["due_date"] = None; t["due_time"] = ""
+                    elif isinstance(result, tuple):
+                        d, tm = result
+                        t["due_date"] = d.isoformat(); t["due_time"] = tm
+                    else:
+                        t["due_date"] = result.isoformat(); t["due_time"] = ""
+                    t["due_jumped"] = False
+                    b.configure(text=_dd_text(t),
+                        fg=T["archive"] if t.get("due_date") else T["muted"])
+                    save_tasks(self.tasks)
+                    self._render_tasks()
+                self._show_calendar_picker(b, init, _on_sel,
+                    show_time=True, initial_time=init_time)
+
+            sd_btn.configure(command=_pick_start)
+            dd_btn.configure(command=_pick_due)
+
+        _paint_widgets = [row,tw,lbl,meta] + ([date_row] if date_row else [])
 
         def mk_btn(txt, cmd_fn):
             b = tk.Button(row,text=txt,command=cmd_fn,bg=T["item_bg"],fg=T["text"],
