@@ -312,7 +312,11 @@ class App:
         self._purge_old_trash()
         global _app_instance; _app_instance = self
         self._tasks_cache = None
-        self.current_tab   = "priorities" if self.cfg.get("use_priorities_tab", True) else "active"
+        _last_tab = self.cfg.get("last_tab")
+        if _last_tab in ("active","archive","priorities","docs","habits","stats"):
+            self.current_tab = _last_tab
+        else:
+            self.current_tab = "priorities" if self.cfg.get("use_priorities_tab", True) else "active"
         self.search_var    = None
         self._drag_x = self._drag_y = 0
         self._restore_geo  = None
@@ -811,6 +815,7 @@ class App:
 
     def _set_tab(self, name):
         self.current_tab = name
+        self.cfg["last_tab"] = name; save_config(self.cfg)
         self._refresh_tabs()
         self.entry.configure(state="normal" if name=="active" else "disabled")
         self._render_tasks()
@@ -2087,10 +2092,27 @@ class App:
         import tkinter.ttk as ttk
         style = ttk.Style()
         try:
+            style.theme_use("clam")
+        except Exception: pass
+        try:
             style.configure("Pri.TCombobox", fieldbackground=T["entry_bg"],
-                background=T["btn_bg"], foreground=T["text"],
-                arrowcolor=T["text"], selectbackground=T["btn_bg"],
-                selectforeground=T["text"])
+                background=T["entry_bg"], foreground=T["entry_fg"],
+                arrowcolor=T["text"], selectbackground=T["entry_bg"],
+                selectforeground=T["entry_fg"], bordercolor=T["separator"],
+                lightcolor=T["entry_bg"], darkcolor=T["entry_bg"])
+            style.map("Pri.TCombobox",
+                fieldbackground=[("readonly", T["entry_bg"])],
+                foreground=[("readonly", T["entry_fg"])],
+                background=[("readonly", T["entry_bg"]), ("active", T["item_hover"])],
+                arrowcolor=[("readonly", T["text"])])
+        except Exception: pass
+        # dropdown listbox (popdown) colors — not covered by ttk style, needs option db
+        try:
+            self.root.option_add("*TCombobox*Listbox.background", T["entry_bg"])
+            self.root.option_add("*TCombobox*Listbox.foreground", T["entry_fg"])
+            self.root.option_add("*TCombobox*Listbox.selectBackground", T["btn_bg"])
+            self.root.option_add("*TCombobox*Listbox.selectForeground", T["btn_fg"])
+            self.root.option_add("*TCombobox*Listbox.font", (fn, 8))
         except Exception: pass
         vcb = ttk.Combobox(tb, textvariable=view_var, values=VIEWS,
             state="readonly", width=11, style="Pri.TCombobox",
@@ -2233,7 +2255,6 @@ class App:
             grid_host.grid_columnconfigure(c, weight=1)
             grid_host.grid_rowconfigure(r, weight=0)
 
-            # colored header strip
             hdr = tk.Frame(cube, bg=bar_col, height=6)
             hdr.pack(fill="x")
 
@@ -2246,7 +2267,7 @@ class App:
                 font=(fn,8,"bold")).pack(side="left", padx=(0,4))
             title_lbl = tk.Label(top, text=item.get("title","Priority"),
                 bg=ibg, fg=T["text"], font=(fn,10,"bold"),
-                anchor="w", wraplength=120)
+                anchor="w", wraplength=120, cursor="hand2")
             title_lbl.pack(side="left", fill="x", expand=True)
             title_lbl.bind("<Double-Button-1>",
                 lambda e, lbl=title_lbl, it=item, its=items:
@@ -2271,12 +2292,16 @@ class App:
                 tk.Label(body, text=f"{done}/{len(subs)} done",
                     bg=ibg, fg=T["muted"], font=(fn,7)).pack(anchor="w")
 
-            # note snippet
+            # note area — dedicated clickable widget (only this opens the note popup)
             note = item.get("notes","")
-            if note:
-                tk.Label(body, text=note[:60]+("…" if len(note)>60 else ""),
-                    bg=ibg, fg=T["muted"], font=(fn,7),
-                    anchor="w", wraplength=120, justify="left").pack(anchor="w", pady=(2,0))
+            note_preview = (note[:60] + ("…" if len(note)>60 else "")) if note else "✏ note"
+            note_lbl = tk.Label(body, text=note_preview,
+                bg=ibg, fg=T["muted"] if not note else T["text"], font=(fn,7),
+                anchor="w", wraplength=120, justify="left", cursor="hand2")
+            note_lbl.pack(fill="x", anchor="w", pady=(4,0))
+            note_lbl.bind("<Button-1>",
+                lambda e, it=item, its=items, ibg=ibg:
+                    self._edit_priority_notes(it, its, e.widget, ibg))
 
             # delete (top-right corner)
             def _del(it=item, its=items, cr=[None]):
@@ -2292,15 +2317,6 @@ class App:
             del_b._confirm=False
             del_b.configure(command=lambda br=[del_b],it=item,its=items:_del(it,its,br))
             del_b.pack(side="right")
-
-            # click anywhere → open note
-            for w in (cube, body, top):
-                w.bind("<Button-1>",
-                    lambda e,it=item,its=items: self._edit_priority_notes(
-                        it, its,
-                        next((c for c in e.widget.winfo_children()
-                              if isinstance(c,tk.Label) and "✏" in c.cget("text")),
-                             e.widget), ibg))
 
         tk.Frame(self.task_frame, bg=T["bg"], height=20).pack(fill="x")
 
@@ -2320,25 +2336,26 @@ class App:
             body.pack(fill="both", expand=True)
             tk.Label(body, text=badge_text, bg=ibg, fg=badge_fg,
                 font=(fn,8,"bold")).pack(anchor="w")
-            tk.Label(body, text=item.get("title","Priority"), bg=ibg, fg=T["text"],
-                font=(fn,10,"bold"), anchor="w", wraplength=200).pack(anchor="w")
+            title_lbl = tk.Label(body, text=item.get("title","Priority"), bg=ibg, fg=T["text"],
+                font=(fn,10,"bold"), anchor="w", wraplength=200, cursor="hand2")
+            title_lbl.pack(anchor="w")
+            title_lbl.bind("<Double-Button-1>",
+                lambda e, lbl=title_lbl, it=item, its=items:
+                    self._inline_edit_priority_title(lbl, it, its))
             subs = item.get("subtasks",[])
             done = sum(1 for s in subs if s.get("done"))
             if subs:
                 tk.Label(body, text=f"{done}/{len(subs)} done",
                     bg=ibg, fg=T["muted"], font=(fn,7)).pack(anchor="w")
             note = item.get("notes","")
-            if note:
-                tk.Label(body, text=note[:80]+("…" if len(note)>80 else ""),
-                    bg=ibg, fg=T["muted"], font=(fn,7), wraplength=200,
-                    justify="left").pack(anchor="w", pady=(2,0))
-            # click → open note
-            note_lbl_ref = [None]
-            def _open(e,it=item,its=items):
-                lbl = next((w for w in body.winfo_children()
-                            if isinstance(w,tk.Label) and "✏" in w.cget("text")), body)
-                self._edit_priority_notes(it, its, lbl, ibg)
-            for w in (cube,body): w.bind("<Button-1>",_open)
+            note_preview = (note[:80] + ("…" if len(note)>80 else "")) if note else "✏ note"
+            note_lbl = tk.Label(body, text=note_preview,
+                bg=ibg, fg=T["muted"] if not note else T["text"], font=(fn,7), wraplength=200,
+                justify="left", cursor="hand2")
+            note_lbl.pack(anchor="w", pady=(2,0))
+            note_lbl.bind("<Button-1>",
+                lambda e, it=item, its=items, ibg=ibg:
+                    self._edit_priority_notes(it, its, e.widget, ibg))
             return cube
 
         if items:
@@ -2491,14 +2508,18 @@ class App:
     def _toggle_priority_sub(self, sub, var, item, items, sf, ibg):
         sub["done"] = var.get()
         save_priorities(items)
-        self._render_priority_subtasks(sf, item, items, ibg, self.T)
+        view = self.cfg.get("focus_view","list")
+        if view != "list":
+            self.root.after(30, self._render_tasks)
+        else:
+            self._render_priority_subtasks(sf, item, items, ibg, self.T)
 
     def _add_priority_subtask(self, item, items, sf, ibg):
         new_sub = {"id": str(uuid.uuid4()), "text": "", "done": False}
         item.setdefault("subtasks", []).append(new_sub)
         save_priorities(items)
         self._render_priority_subtasks(sf, item, items, ibg, self.T)
-        # inline edit the new sub
+        # inline edit the new sub (works the same across all views since sf is a live widget)
         if sf.winfo_children():
             last_row = sf.winfo_children()[-1]
             lbls = [w for w in last_row.winfo_children() if isinstance(w, tk.Label) and w.cget("text") == ""]
@@ -2508,6 +2529,7 @@ class App:
     def _inline_edit_priority_title(self, lbl, item, items):
         T = self.T; fn = self.cfg.get("ui_font","Segoe UI Variable")
         old = item.get("title","")
+        view = self.cfg.get("focus_view","list")
         lbl.pack_forget()
         var = tk.StringVar(value=old)
         e = tk.Entry(lbl.master, textvariable=var, bg=T["entry_bg"], fg=T["entry_fg"],
@@ -2515,18 +2537,25 @@ class App:
             highlightthickness=1, highlightbackground=T["check_done"])
         e.pack(side="left", fill="x", expand=True, ipady=2)
         e.focus_set(); e.select_range(0,"end")
+        _done = [False]
         def finish(ev=None):
+            if _done[0]: return
+            _done[0] = True
             new = var.get().strip() or old
             item["title"] = new; save_priorities(items)
+            if view != "list":
+                self.root.after(50, self._render_tasks)
+                return
             try: e.destroy()
             except Exception: pass
             lbl.configure(text=new); lbl.pack(side="left", fill="x", expand=True)
         e.bind("<Return>", finish); e.bind("<Escape>", lambda ev: finish())
-        e.bind("<FocusOut>", finish)
+        e.bind("<FocusOut>", lambda ev: self.root.after(60, finish))
 
     def _inline_edit_priority_sub(self, row, lbl, sub, item, items):
         T = self.T; fn = self.cfg.get("ui_font","Segoe UI Variable")
         old = sub.get("text","")
+        view = self.cfg.get("focus_view","list")
         lbl.pack_forget()
         var = tk.StringVar(value=old)
         e = tk.Entry(row, textvariable=var, bg=T["entry_bg"], fg=T["entry_fg"],
@@ -2540,19 +2569,23 @@ class App:
             _done[0] = True
             new = var.get().strip()
             if discard or (not new and not old):
-                # brand-new empty sub that was never typed → remove silently
                 if not old and not new:
                     item.get("subtasks",[]).remove(sub); save_priorities(items)
+                    if view != "list":
+                        self.root.after(30, self._render_tasks); return
                     try: row.destroy()
                     except Exception: pass
                 else:
-                    # restore old label if user cleared existing text via Escape
+                    if view != "list":
+                        self.root.after(30, self._render_tasks); return
                     try: e.destroy()
                     except Exception: pass
                     lbl.configure(text=old or ""); lbl.pack(side="left", fill="x", expand=True)
                 return
-            # always save whatever was typed (even if same as old)
             sub["text"] = new; save_priorities(items)
+            if view != "list":
+                self.root.after(30, self._render_tasks)
+                return
             try: e.destroy()
             except Exception: pass
             lbl.configure(text=new); lbl.pack(side="left", fill="x", expand=True)
@@ -2563,6 +2596,11 @@ class App:
     def _edit_priority_notes(self, item, items, preview_lbl, ibg):
         T = self.T; fn = self.cfg.get("ui_font","Segoe UI Variable")
         old = item.get("notes","")
+        view = self.cfg.get("focus_view","list")
+        # In cubes/pyramid/zen: open a floating popup editor instead of inline swap
+        if view != "list":
+            self._edit_priority_notes_popup(item, items, ibg)
+            return
         preview_lbl.pack_forget()
         txt = tk.Text(preview_lbl.master, bg=T["entry_bg"], fg=T["entry_fg"],
             insertbackground=T["entry_fg"], relief="flat", font=(fn,8),
@@ -2571,19 +2609,102 @@ class App:
         txt.insert("1.0", old)
         txt.pack(fill="x", pady=(2,2))
         txt.focus_set()
+        _done = [False]
         def finish(ev=None):
+            if _done[0]: return
+            _done[0] = True
             new = txt.get("1.0","end-1c").strip()
             item["notes"] = new; save_priorities(items)
             preview = new[:120] + ("…" if len(new)>120 else "")
-            preview_lbl.configure(text=preview or "Add a note…",
+            preview_lbl.configure(text=preview or "✏ note",
                 fg=T["muted"] if not new else T["text"])
             try: txt.destroy()
             except Exception: pass
             preview_lbl.pack(fill="x", anchor="w", pady=(2,0))
         txt.bind("<Escape>", lambda e: finish())
-        txt.bind("<FocusOut>", finish)
-        # Ctrl+Enter to confirm
+        txt.bind("<FocusOut>", lambda e: self.root.after(80, finish))
         txt.bind("<Control-Return>", lambda e: finish())
+
+    def _edit_priority_notes_popup(self, item, items, ibg):
+        """Floating note editor for cubes/pyramid/zen — refreshes board on close."""
+        T = self.T; fn = self.cfg.get("ui_font","Segoe UI Variable")
+        old = item.get("notes","")
+        win = tk.Toplevel(self.root)
+        win.title(f"Note — {item.get('title','Priority')}")
+        win.configure(bg=T["bg"])
+        win.resizable(True, True)
+        win.geometry("380x220")
+        win.attributes("-topmost", True)
+        # center over main window
+        self.root.update_idletasks()
+        rx = self.root.winfo_rootx() + self.root.winfo_width()//2 - 190
+        ry = self.root.winfo_rooty() + self.root.winfo_height()//2 - 110
+        win.geometry(f"380x220+{rx}+{ry}")
+
+        hdr = tk.Frame(win, bg=T["header_bg"]); hdr.pack(fill="x")
+        tk.Label(hdr, text=f"✏  {item.get('title','Priority')}",
+            bg=T["header_bg"], fg=T["text"],
+            font=(fn,10,"bold"), padx=10, pady=6).pack(side="left")
+        # save icon in the header row itself — always visible regardless of window size
+        _save_icon_btn = tk.Button(hdr, text="💾", bg=T["header_bg"], fg=T["text"],
+            relief="flat", bd=0, font=(fn,11), padx=8, cursor="hand2",
+            activebackground=T["btn_hover"])
+        _save_icon_btn.pack(side="right", padx=(0,8))
+
+        txt = tk.Text(win, bg=T["entry_bg"], fg=T["entry_fg"],
+            insertbackground=T["entry_fg"], relief="flat", font=(fn,9),
+            highlightthickness=0, wrap="word", padx=8, pady=8)
+        txt.insert("1.0", old)
+        txt.pack(fill="both", expand=True, padx=8, pady=(6,4))
+        txt.focus_set()
+
+        btn_row = tk.Frame(win, bg=T["bg"]); btn_row.pack(fill="x", padx=8, pady=(0,8))
+        tk.Label(btn_row, text="Ctrl+Enter or Save to confirm",
+            bg=T["bg"], fg=T["muted"], font=(fn,7)).pack(side="left")
+
+        _saved = [False]
+        def save_and_close(ev=None):
+            if _saved[0]: return
+            _saved[0] = True
+            new = txt.get("1.0","end-1c").strip()
+            item["notes"] = new; save_priorities(items)
+            win.destroy()
+            self._render_tasks()
+
+        def save_flash(ev=None):
+            new = txt.get("1.0","end-1c").strip()
+            item["notes"] = new; save_priorities(items)
+            if win.winfo_exists() and _save_icon_btn.winfo_exists():
+                _save_icon_btn.configure(text="✅")
+                win.after(700, lambda: _save_icon_btn.configure(text="💾") if _save_icon_btn.winfo_exists() else None)
+
+        _save_icon_btn.configure(command=save_flash)
+
+        tk.Button(btn_row, text="Save", command=save_and_close,
+            bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+            font=(fn,8), padx=10, pady=3, cursor="hand2",
+            activebackground=T["btn_hover"]).pack(side="right")
+
+        # autosave while typing (debounced)
+        _autosave_job = [None]
+        def _schedule_autosave(*_a):
+            if _autosave_job[0]:
+                try: win.after_cancel(_autosave_job[0])
+                except Exception: pass
+            _autosave_job[0] = win.after(900, save_flash)
+        txt.bind("<KeyRelease>", _schedule_autosave)
+
+        txt.bind("<Control-Return>", save_and_close)
+        win.bind("<Escape>", lambda e: win.destroy())
+        def _on_close():
+            if _autosave_job[0]:
+                try: win.after_cancel(_autosave_job[0])
+                except Exception: pass
+            new = txt.get("1.0","end-1c").strip()
+            item["notes"] = new; save_priorities(items)
+            win.destroy()
+            self._render_tasks()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
 
     def _add_priority_item(self, items):
         new = {"id": str(uuid.uuid4()), "title": "New Priority",
@@ -2997,6 +3118,12 @@ class App:
             font=(self.cfg.get("ui_font","Segoe UI Variable"),11,"bold"),
             highlightthickness=1,highlightbackground=T["separator"])
         title_entry.pack(side="left",fill="x",expand=True,ipady=4,padx=(6,4))
+        # always-visible save icon, next to the title so it's reachable even
+        # if the window is small/unexpanded and the bottom Save button is hidden
+        _save_icon_btn = tk.Button(tf, text="💾", bg=T["bg"], fg=T["text"],
+            relief="flat", bd=0, font=(self.cfg.get("ui_font","Segoe UI Variable"),11),
+            padx=6, cursor="hand2", activebackground=T["btn_hover"])
+        _save_icon_btn.pack(side="left", padx=(2,0))
         if focus_title:
             win.after(50, lambda: (title_entry.focus_set(), title_entry.select_range(0,"end")))
         # category selector
@@ -3032,7 +3159,7 @@ class App:
         body_sb.pack(side="right",fill="y")
         body_text.pack(fill="both",expand=True)
         body_text.insert("1.0", doc.get("body",""))
-        def save_doc():
+        def save_doc(flash=False):
             old_title = doc.get("title","")
             old_cat   = _original_cat[0]  # snapshot from window-open (or last save)
             doc["title"] = title_var.get().strip() or "Untitled"
@@ -3045,7 +3172,8 @@ class App:
             all_docs = [d for d in all_docs if d.get("id")!=doc.get("id")]
             all_docs.insert(0, doc)
             save_docs(all_docs)
-            win.title(f"Doc - {doc['title']}")
+            if win.winfo_exists():
+                win.title(f"Doc - {doc['title']}")
             bp = self.cfg.get("docs_backup_path","").strip()
             if bp:
                 import re as _re3
@@ -3067,13 +3195,31 @@ class App:
                 self._sync_doc_backup(doc, new_cat_folder)
             _original_cat[0] = new_cat  # update snapshot for next save
             if self.current_tab=="docs": self._render_tasks()
+            if flash and win.winfo_exists() and _save_icon_btn.winfo_exists():
+                _save_icon_btn.configure(text="✅")
+                win.after(700, lambda: _save_icon_btn.configure(text="💾") if _save_icon_btn.winfo_exists() else None)
+
         def close_save():
             save_doc(); win.destroy()
+
+        # ── autosave: debounced save while typing (title or body) ───────────
+        _autosave_job = [None]
+        def _schedule_autosave(*_a):
+            if _autosave_job[0]:
+                try: win.after_cancel(_autosave_job[0])
+                except Exception: pass
+            _autosave_job[0] = win.after(900, lambda: save_doc(flash=True))
+        title_var.trace_add("write", _schedule_autosave)
+        body_text.bind("<KeyRelease>", _schedule_autosave)
+        _cat_var.trace_add("write", _schedule_autosave)
+
         if _done_btn_ref[0]:
             _done_btn_ref[0].configure(command=close_save)
         # Enter on title → done
         title_entry.bind("<Return>", lambda e: close_save())
         title_entry.bind("<Escape>", lambda e: close_save())
+        # save icon (next to title) → manual save with flash feedback, keeps window open
+        _save_icon_btn.configure(command=lambda: save_doc(flash=True))
         # Ctrl+Z / Ctrl+Y handled natively by tk.Text when undo=True
 
         bf = tk.Frame(win,bg=T["bg"]); bf.pack(fill="x",padx=10,pady=(0,10))
@@ -3081,11 +3227,18 @@ class App:
             bg=T["check_done"],fg="#ffffff",relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold"),
             padx=12,pady=5,cursor="hand2",activebackground=T["check_done"]).pack(side="right")
-        tk.Button(bf,text="💾 Save",command=save_doc,
+        tk.Button(bf,text="💾 Save",command=lambda: save_doc(flash=True),
             bg=T["btn_bg"],fg=T["btn_fg"],relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
             padx=10,pady=5,cursor="hand2",activebackground=T["btn_hover"]).pack(side="right",padx=(0,6))
-        win.protocol("WM_DELETE_WINDOW", close_save)
+        # auto-save on window close (no dialogs, just persists silently)
+        def _on_close():
+            if _autosave_job[0]:
+                try: win.after_cancel(_autosave_job[0])
+                except Exception: pass
+            save_doc()
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
 
     # ── feature 9: Habits ────────────────────────────────────────────────────
     def _render_habits(self, T):
