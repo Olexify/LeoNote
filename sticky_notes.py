@@ -333,6 +333,13 @@ def remove_from_note(path, tid):
 
 # ═══════════════════════════════════════════════════════════════════════════════
 class App:
+    # Every tab that owns a cached frame.
+    _ALL_TABS = ("active", "archive", "trash", "search",
+                 "stats", "docs", "habits", "priorities")
+    # Never served from cache: "stats" reads live cfg (xp / pomodoro counters),
+    # "search" reads the live query string. Both are cheap single-column views.
+    _ALWAYS_FRESH = ("stats", "search")
+
     def __init__(self):
         enable_high_dpi()
         self.cfg   = load_config()
@@ -342,6 +349,7 @@ class App:
         self._purge_old_trash()
         global _app_instance; _app_instance = self
         self._tasks_cache = None
+        self._init_tab_cache()
         _last_tab = self.cfg.get("last_tab")
         if _last_tab in ("active","archive","priorities","docs","habits","stats"):
             self.current_tab = _last_tab
@@ -402,6 +410,11 @@ class App:
         self._apply_window_mode(first=True)
         self._build_ui()
         self._bind_wheel_once()
+        # Trash purge + date jumps used to piggyback on _render_tasks. With tabs
+        # cached, _render_tasks stops running on most navigation, so this work
+        # needs its own clock.
+        self._maint_job = None
+        self.root.after(2000, lambda: self._maintenance_tick(first=True))
 
         if self.cfg.get("show_in_tray"): self._setup_tray()
         if self.cfg.get("start_hidden_to_tray") and self.cfg.get("show_in_tray"):
@@ -604,11 +617,18 @@ class App:
         self.canvas.configure(yscrollcommand=sb.set)
         sb.pack(side="right",fill="y")
         self.canvas.pack(side="left",fill="both",expand=True)
-        self.task_frame = tk.Frame(self.canvas,bg=self.T["bg"])
+        # _build_ui rebuilds the canvas, so every cached frame is now a child of
+        # a dead widget: drop them all and mark every tab dirty so the new theme
+        # is applied on each tab's next visit.
+        self._tab_frames = {}
+        self._tab_reg    = {}
+        self._tab_dirty  = set(self._ALL_TABS)
+        self._current_frame_tab = None
+        self.task_frame = self._tab_frame(self.current_tab)
         self._cw = self.canvas.create_window((0,0),window=self.task_frame,anchor="nw")
-        self.task_frame.bind("<Configure>", lambda e: self._update_scroll())
+        self._show_tab_frame(self.current_tab)
         self.canvas.bind("<Configure>",     lambda e: self.canvas.itemconfig(self._cw,width=e.width))
-        for w in (self.canvas, self.task_frame):
+        for w in (self.canvas,):
             w.bind("<MouseWheel>",         self._scroll)
             w.bind("<Button-4>",           self._scroll)
             w.bind("<Button-5>",           self._scroll)
@@ -673,7 +693,10 @@ class App:
         self._build_ui()
         self.current_tab = old_tab
         self._refresh_tabs()
-        self._render_tasks()
+        # _build_ui marked every tab dirty and rebuilt the frames, so this
+        # renders; the guard keeps it honest if that ever changes.
+        if self.current_tab in self._tab_dirty or self.current_tab in self._ALWAYS_FRESH:
+            self._render_tasks()
         self._restyle_settings_window()
         self.root.after(30, self._keep_settings_alive)
 
@@ -832,14 +855,26 @@ class App:
                 self.entry_area.pack(fill="x")
 
     def _set_tab(self, name):
+        # Fast path: already showing this tab and nothing invalidated it.
+        if (self._current_frame_tab == name
+                and name not in self._tab_dirty
+                and name not in self._ALWAYS_FRESH):
+            return
+        self._stash_tab_state(self._current_frame_tab)
         self.current_tab = name
-        self.cfg["last_tab"] = name; save_config(self.cfg)
-        self._refresh_tabs()
-        self.entry.configure(state="normal" if name=="active" else "disabled")
-        self._render_tasks()
-        self.canvas.yview_moveto(0.0)
+        self.cfg["last_tab"] = name
+        self._save_cfg_debounced()          # was a synchronous save_config()
+        self._refresh_tabs()                # may flip archive <-> priorities
+        name = self.current_tab             # honour that flip
+        self.entry.configure(state="normal" if name == "active" else "disabled")
+        self._show_tab_frame(name)
+        if name in self._tab_dirty or name in self._ALWAYS_FRESH:
+            self._render_tasks()            # clears the dirty flag
+        else:
+            self._update_scroll()
+            self._refresh_status_bar()
+        self._restore_scroll(name)
 
-    # ── scroll ────────────────────────────────────────────────────────────────
     def _update_scroll(self): self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     def _scroll(self, e):
         if   getattr(e,"num",None)==4: d=-1
@@ -912,85 +947,58 @@ class App:
 
     # ── render ────────────────────────────────────────────────────────────────
     def _render_tasks(self):
+        # Self-correcting resync. _add_task, _unsolve_task and _trash_task
+        # assign self.current_tab directly and then call _render_tasks,
+        # bypassing _set_tab; without this they would render one tab's content
+        # into another tab's frame.
+        if self._current_frame_tab != self.current_tab:
+            self._stash_tab_state(self._current_frame_tab)
+            self._show_tab_frame(self.current_tab)
+        # Preserve scroll across in-tab re-renders (checkbox toggle, priority
+        # cycle, trash/recover). Every one of these used to jump to the top.
+        try: keep_off = self.canvas.yview()[0]
+        except Exception: keep_off = 0.0
+        # _refresh_tabs (called below, AFTER the dispatch) can itself reassign
+        # self.current_tab - archive<->priorities, or trash->active when the bin
+        # empties. Book-keep against what we actually rendered, not against the
+        # post-flip value, or we file this tab's registries under another tab's
+        # name and mark that other tab clean while its frame is still empty.
+        rendered = self.current_tab
         self._subtask_label_registry = {}
         self._subtask_check_registry = {}
-        self._task_widget_registry = {}  # id(task) -> {lbl, pri_bar, tw, date_row, pri_lbl}
-        # Detach task_frame from canvas while rebuilding to suppress per-widget redraws
+        self._task_widget_registry   = {}   # id(task) -> {lbl, pri_bar, tw, ...}
+        # Keep this pack_propagate pair: it stops task_frame collapsing to zero
+        # height mid-rebuild.
         self.task_frame.pack_propagate(False)
         for w in self.task_frame.winfo_children(): w.destroy()
-        now_ts = datetime.datetime.now().timestamp()
-        if now_ts - getattr(self,"_last_purge_ts",0) > 60:
-            self._purge_old_trash(); self._purge_old_doc_trash(); self._purge_old_habit_trash()
-            self._last_purge_ts = now_ts
-        # ── Scheduled: jump tasks to top when start_date arrives ────────────
-        import datetime as _dtj
-        _today_j = _dtj.date.today()
-        _changed = False
-        for _t in self.tasks:
-            if _t.get("deleted") or _t.get("done"): continue
-            _sd = _t.get("start_date")
-            _dd = _t.get("due_date")
-            # scheduled task: start_date arrived today → jump to top once
-            # guarded: a malformed date here would blank EVERY tab (this runs
-            # above the tab dispatch), and recurring tasks write due_date.
-            try:
-                if _sd and not _t.get("scheduled_jumped"):
-                    _sd_d = _dtj.date.fromisoformat(_sd)
-                    if _sd_d <= _today_j:
-                        _t["scheduled_jumped"] = True
-                        self.tasks.remove(_t)
-                        self.tasks.insert(0, _t)
-                        _changed = True
-            except Exception: pass
-            # due task: due_date is today → jump to top + bump priority once
-            try:
-                if _dd and not _t.get("due_jumped"):
-                    _dd_d = _dtj.date.fromisoformat(_dd)
-                    if _dd_d == _today_j:
-                        _t["due_jumped"] = True
-                        _pri = _t.get("priority","none")
-                        if _pri in ("none","low"): _t["priority"] = "medium"
-                        elif _pri == "medium":     _t["priority"] = "high"
-                        self.tasks.remove(_t)
-                        self.tasks.insert(0, _t)
-                        _changed = True
-            except Exception: pass
-        if _changed:
-            save_tasks(self.tasks)
         T = self.T
-        if   self.current_tab=="active":  self._render_active(T)
-        elif self.current_tab=="archive": self._render_archive(T)
-        elif self.current_tab=="trash":   self._render_trash(T)
-        elif self.current_tab=="search":  self._render_search(T)
-        elif self.current_tab=="stats":   self._render_stats(T)
-        elif self.current_tab=="docs":    self._render_docs(T)
-        elif self.current_tab=="habits":       self._render_habits(T)
-        elif self.current_tab=="priorities":   self._render_priorities(T)
-        else:                             self._render_active(T)
-
+        if   rendered == "active":     self._render_active(T)
+        elif rendered == "archive":    self._render_archive(T)
+        elif rendered == "trash":      self._render_trash(T)
+        elif rendered == "search":     self._render_search(T)
+        elif rendered == "stats":      self._render_stats(T)
+        elif rendered == "docs":       self._render_docs(T)
+        elif rendered == "habits":     self._render_habits(T)
+        elif rendered == "priorities": self._render_priorities(T)
+        else:                          self._render_active(T)
         tk.Frame(self.task_frame, bg=T["bg"], height=60).pack(fill="x")
-        self.task_frame.pack_propagate(True)   # re-enable — triggers single repaint
+        self.task_frame.pack_propagate(True)   # re-enable: single repaint
         self._update_scroll()
         self._refresh_tabs()
-        now_dt_ = now_dt()
-        _cutoff = now_dt_ - datetime.timedelta(days=1)
-        open_count = 0; archive_count = 0; trash_count = 0
-        for _t in self.tasks:
-            if _t.get("deleted"):
-                trash_count += 1
-            elif _t.get("done") and _t.get("completed_at"):
-                try:
-                    if parse_iso(_t["completed_at"]) < _cutoff:
-                        archive_count += 1
-                except Exception:
-                    pass
-            elif not _t.get("done"):
-                open_count += 1
-        parts = [f"Tasks: {open_count}", f"Archive: {archive_count}"]
-        if trash_count: parts.append(f"Trash: {trash_count}")
-        self.status_var.set(" · ".join(parts))
+        self._tab_dirty.discard(rendered)
+        # Store the freshly built registries against the tab we rendered. These
+        # are the same mutable dicts the row builders keep filling afterwards,
+        # so storing the reference (not a copy) is correct.
+        self._tab_reg[rendered] = (self._task_widget_registry,
+                                   self._subtask_label_registry,
+                                   self._subtask_check_registry)
+        if self.current_tab != rendered:       # _refresh_tabs flipped us
+            self._tab_dirty.add(self.current_tab)
+            self._render_tasks_debounced(0)
+        self._refresh_status_bar()
+        try: self.canvas.yview_moveto(keep_off)
+        except Exception: pass
 
-    # ── feature 1: two-section active list ───────────────────────────────────
     def _render_active(self, T):
         pool     = self._active_tasks()
         scheduled = self._scheduled_tasks()
@@ -4464,6 +4472,9 @@ class App:
         if self._pomo_tick_job:
             try: self.root.after_cancel(self._pomo_tick_job)
             except Exception: pass
+        if getattr(self, "_maint_job", None):
+            try: self.root.after_cancel(self._maint_job)
+            except Exception: pass
 
         save_config(self.cfg); save_tasks(self.tasks); self._destroy_tray(); self.root.destroy()
 
@@ -4514,12 +4525,150 @@ class App:
     def _resize_stop(self, e): self._resize_edge=None; self._resize_start=None
 
     def _mark_tabs_dirty(self, tabs):
-        """Mark cached tab frames stale. Defensive: save_*() can fire from
-        _purge_old_trash() during __init__, long before _tab_dirty exists."""
+        """Single invalidation entry point, called from the save_* functions.
+        Defensive: save_*() can fire from _purge_old_trash() during __init__,
+        long before _tab_dirty exists.
+
+        Dropping the registries matters: _task_widget_registry is keyed by
+        id(task), and with per-tab retained registries a freed task dict's
+        address can be reused by a newly allocated one, so a stale entry could
+        point at the wrong row. A dirty tab is fully re-rendered anyway."""
         d = getattr(self, "_tab_dirty", None)
-        if d is None: return
-        for t in tabs:
-            d.add(t)
+        if d is None:
+            d = self._tab_dirty = set()
+        d.update(tabs)
+        reg = getattr(self, "_tab_reg", None)
+        if reg:
+            for n in tabs:
+                reg.pop(n, None)
+
+    # -- per-tab frame cache ------------------------------------------------
+    def _init_tab_cache(self):
+        self._tab_frames = {}          # tab -> tk.Frame (child of canvas)
+        self._tab_dirty  = set(self._ALL_TABS)
+        self._tab_scroll = {}          # tab -> canvas yview fraction
+        self._tab_reg    = {}          # tab -> (task_reg, sub_lbl, sub_chk)
+        self._current_frame_tab = None
+
+    def _tab_frame(self, name):
+        """Get-or-create the persistent container frame for one tab."""
+        f = self._tab_frames.get(name)
+        if f is not None:
+            try:
+                if f.winfo_exists(): return f
+            except Exception: pass
+        f = tk.Frame(self.canvas, bg=self.T["bg"])
+        f.bind("<Configure>", lambda e: self._update_scroll())
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            f.bind(seq, self._scroll)
+        f.bind("<Control-MouseWheel>", self._ctrl_scroll)
+        self._tab_frames[name] = f
+        self._tab_dirty.add(name)
+        return f
+
+    def _stash_tab_state(self, name):
+        """Save the outgoing tab's scroll offset and in-place-update registries."""
+        if not name: return
+        try: self._tab_scroll[name] = self.canvas.yview()[0]
+        except Exception: pass
+        self._tab_reg[name] = (getattr(self, "_task_widget_registry", {}),
+                               getattr(self, "_subtask_label_registry", {}),
+                               getattr(self, "_subtask_check_registry", {}))
+
+    def _show_tab_frame(self, name):
+        """Mount one tab's frame in the canvas window item. Rebinding
+        self.task_frame is what moves all nine render functions and _task_row
+        at once without editing any of them."""
+        f = self._tab_frame(name)
+        if f is not getattr(self, "task_frame", None):
+            self.task_frame = f
+            try: self.canvas.itemconfigure(self._cw, window=f)
+            except Exception: pass
+        self._current_frame_tab = name
+        # Registries are per-tab: _render_tasks resets them on every render
+        # regardless of tab, so without this every in-place update
+        # (_cycle_priority, _toggle_subtask) would degrade to a full re-render.
+        tw, sl, sc = self._tab_reg.get(name, ({}, {}, {}))
+        self._task_widget_registry   = tw
+        self._subtask_label_registry = sl
+        self._subtask_check_registry = sc
+
+    def _restore_scroll(self, name):
+        """Re-apply this tab's remembered scroll offset, twice: once now and
+        once after Tk's post-map relayout, which would otherwise clamp it."""
+        off = self._tab_scroll.get(name, 0.0)
+        def _apply():
+            try:
+                self._update_scroll()
+                self.canvas.yview_moveto(off)
+            except Exception: pass
+        _apply()
+        try: self.canvas.after_idle(_apply)
+        except Exception: pass
+
+    def _refresh_status_bar(self):
+        """Extracted from the tail of _render_tasks so the cached-tab fast path
+        can still update the counts without rendering."""
+        cutoff = now_dt() - datetime.timedelta(days=1)
+        open_count = archive_count = trash_count = 0
+        for t in self.tasks:
+            if t.get("deleted"):
+                trash_count += 1
+            elif t.get("done") and t.get("completed_at"):
+                try:
+                    if parse_iso(t["completed_at"]) < cutoff: archive_count += 1
+                except Exception: pass
+            elif not t.get("done"):
+                open_count += 1
+        parts = ["Tasks: %d" % open_count, "Archive: %d" % archive_count]
+        if trash_count: parts.append("Trash: %d" % trash_count)
+        self.status_var.set(" · ".join(parts))
+
+    def _apply_date_jumps(self):
+        """Was inlined in _render_tasks. Collects first, then reorders: the
+        original mutated self.tasks while iterating it."""
+        today = datetime.date.today()
+        jump = []; changed = False
+        for t in self.tasks:
+            if t.get("deleted") or t.get("done"): continue
+            hit = False
+            sd = t.get("start_date")
+            if sd and not t.get("scheduled_jumped"):
+                try:
+                    if datetime.date.fromisoformat(sd) <= today:
+                        t["scheduled_jumped"] = True; hit = True
+                except Exception: pass
+            dd = t.get("due_date")
+            if dd and not t.get("due_jumped"):
+                try:
+                    if datetime.date.fromisoformat(dd) == today:
+                        t["due_jumped"] = True
+                        pri = t.get("priority", "none")
+                        if pri in ("none", "low"): t["priority"] = "medium"
+                        elif pri == "medium":      t["priority"] = "high"
+                        hit = True
+                except Exception: pass
+            if hit:
+                jump.append(t); changed = True
+        if changed:
+            for t in reversed(jump):     # preserve relative order at the top
+                try: self.tasks.remove(t)
+                except ValueError: continue
+                self.tasks.insert(0, t)
+            save_tasks(self.tasks)
+
+    def _maintenance_tick(self, first=False):
+        """Mandatory companion to the frame cache: without its own clock the
+        trash would never purge and scheduled tasks would never jump."""
+        try:
+            self._purge_old_trash()
+            self._purge_old_doc_trash()
+            self._purge_old_habit_trash()
+            self._apply_date_jumps()
+        except Exception: pass
+        if not first and self.current_tab in self._tab_dirty:
+            self._render_tasks()
+        self._maint_job = self.root.after(60000, self._maintenance_tick)
 
     # ── debounced work (coalesce bursts into one job) ─────────────────────────
     def _save_cfg_debounced(self, delay=500):
