@@ -9,6 +9,7 @@ v4 features: docs multi-category filter dropdown + per-category backup folders +
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import json, os, datetime, uuid, ctypes, sys
+_dtm = datetime          # module-level alias (was re-imported per task row)
 
 try:
     import pystray as _pystray
@@ -731,21 +732,6 @@ class App:
             data["habits"] = kept
             save_habits(data)
 
-    def _trash_habits(self):
-        data = load_habits()
-        return [h for h in data.get("habits",[]) if h.get("deleted")]
-
-    def _purge_old_habit_trash(self):
-        now = now_dt()
-        data = load_habits()
-        habits = data.get("habits",[])
-        kept = [h for h in habits
-            if not h.get("deleted") or
-               (h.get("deleted_at") and now - parse_iso(h["deleted_at"]) <= datetime.timedelta(hours=TRASH_HOURS))]
-        if len(kept) != len(habits):
-            data["habits"] = kept
-            save_habits(data)
-
     def _trash_docs(self):
         return [d for d in load_docs() if d.get("deleted")]
 
@@ -913,24 +899,30 @@ class App:
             _sd = _t.get("start_date")
             _dd = _t.get("due_date")
             # scheduled task: start_date arrived today → jump to top once
-            if _sd and not _t.get("scheduled_jumped"):
-                _sd_d = _dtj.date.fromisoformat(_sd)
-                if _sd_d <= _today_j:
-                    _t["scheduled_jumped"] = True
-                    self.tasks.remove(_t)
-                    self.tasks.insert(0, _t)
-                    _changed = True
+            # guarded: a malformed date here would blank EVERY tab (this runs
+            # above the tab dispatch), and recurring tasks write due_date.
+            try:
+                if _sd and not _t.get("scheduled_jumped"):
+                    _sd_d = _dtj.date.fromisoformat(_sd)
+                    if _sd_d <= _today_j:
+                        _t["scheduled_jumped"] = True
+                        self.tasks.remove(_t)
+                        self.tasks.insert(0, _t)
+                        _changed = True
+            except Exception: pass
             # due task: due_date is today → jump to top + bump priority once
-            if _dd and not _t.get("due_jumped"):
-                _dd_d = _dtj.date.fromisoformat(_dd)
-                if _dd_d == _today_j:
-                    _t["due_jumped"] = True
-                    _pri = _t.get("priority","none")
-                    if _pri in ("none","low"): _t["priority"] = "medium"
-                    elif _pri == "medium":     _t["priority"] = "high"
-                    self.tasks.remove(_t)
-                    self.tasks.insert(0, _t)
-                    _changed = True
+            try:
+                if _dd and not _t.get("due_jumped"):
+                    _dd_d = _dtj.date.fromisoformat(_dd)
+                    if _dd_d == _today_j:
+                        _t["due_jumped"] = True
+                        _pri = _t.get("priority","none")
+                        if _pri in ("none","low"): _t["priority"] = "medium"
+                        elif _pri == "medium":     _t["priority"] = "high"
+                        self.tasks.remove(_t)
+                        self.tasks.insert(0, _t)
+                        _changed = True
+            except Exception: pass
         if _changed:
             save_tasks(self.tasks)
         T = self.T
@@ -3285,7 +3277,7 @@ class App:
         bar_bg.bind("<Configure>", _draw_today_bar)
         bar_bg.after(50, _draw_today_bar)
 
-        for h in habits:
+        for _h_idx, h in enumerate(habits):
             hid        = h["id"]
             done_today_h = hid in log.get(today,[])
             streak       = _habit_streak(hid,log)
@@ -3293,18 +3285,16 @@ class App:
             total_h_days = _habit_total_days(hid,log)
             last_7       = _habit_last_n(hid,log,7)
             last_30      = _habit_last_n(hid,log,30)
-            # mini 7-day dots
-            dots_7 = "".join("●" if _habit_done_on(hid,log,i) else "○" for i in range(6,-1,-1))
 
             card = tk.Frame(self.task_frame,bg=T["item_bg"],pady=5,padx=8)
-            card._habit_idx = habits.index(h)
+            card._habit_idx = _h_idx
             card.pack(fill="x",pady=2)
 
             # top row: drag-handle, flame+streak, name, done-btn, delete-btn
             top = tk.Frame(card,bg=T["item_bg"]); top.pack(fill="x")
 
             # tiny ⋮⋮ drag handle
-            _hi = habits.index(h)
+            _hi = _h_idx
             drag_h = tk.Label(top, text="⋮⋮", bg=T["item_bg"], fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"), 8),
                 cursor="fleur", padx=2, pady=0)
@@ -3579,7 +3569,6 @@ class App:
         for st in task.get("subtasks",[]):
             self._inject_subtask_row(tw, task, st, archived=archived, trashed=trashed, searching=searching)
 
-        import datetime as _dtm
         _WDAY = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
 
         def _fmt_short(iso_str):
@@ -4344,7 +4333,20 @@ class App:
                             if d.get("id") not in existing: new_docs.append(d)
                         save_docs(new_docs)
                     if "habits" in raw:
-                        save_habits(raw["habits"])
+                        # merge, never overwrite: a bare save_habits(raw["habits"])
+                        # destroyed every existing habit AND the whole completion log.
+                        _inc = raw["habits"]
+                        if isinstance(_inc, dict):
+                            _cur = load_habits()
+                            _have = {h.get("id") for h in _cur.get("habits", [])}
+                            for _h in _inc.get("habits", []):
+                                if _h.get("id") not in _have:
+                                    _cur.setdefault("habits", []).append(_h)
+                            _clog = _cur.setdefault("log", {})
+                            for _day, _ids in (_inc.get("log", {}) or {}).items():
+                                _merged = set(_clog.get(_day, [])) | set(_ids or [])
+                                _clog[_day] = sorted(_merged)
+                            save_habits(_cur)
                     if "gamification" in raw:
                         g=raw["gamification"]
                         self.cfg["xp"]=max(self.cfg.get("xp",0), g.get("xp",0))
