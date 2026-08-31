@@ -401,6 +401,7 @@ class App:
         self.search_var = tk.StringVar(master=self.root)
         self._apply_window_mode(first=True)
         self._build_ui()
+        self._bind_wheel_once()
 
         if self.cfg.get("show_in_tray"): self._setup_tray()
         if self.cfg.get("start_hidden_to_tray") and self.cfg.get("show_in_tray"):
@@ -612,7 +613,7 @@ class App:
             w.bind("<Button-4>",           self._scroll)
             w.bind("<Button-5>",           self._scroll)
             w.bind("<Control-MouseWheel>", self._ctrl_scroll)
-        # root-level scroll handled by _bind_ctrl_wheel_recursive after build
+        # root-level scroll handled by _bind_wheel_once() from __init__
 
         tk.Frame(self.main,bg=self.T["separator"],height=1).pack(fill="x")
         # ── bottom bar: status + pomodoro controls ───────────────────────────
@@ -643,25 +644,27 @@ class App:
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
             padx=4,pady=2,cursor="hand2",activebackground=self.T["btn_hover"]).pack(side="right")
         self._render_tasks()
-        self.root.after(50, lambda: self._bind_ctrl_wheel_recursive(self.main))
-        # Bind scroll globally on canvas so it always works regardless of task_frame contents
-        for _seq in ("<MouseWheel>","<Button-4>","<Button-5>"):
-            self.canvas.bind_all(_seq, self._scroll, add="+")
-        for _seq in ("<Control-MouseWheel>","<Control-Button-4>","<Control-Button-5>"):
-            self.canvas.bind_all(_seq, self._ctrl_scroll, add="+")
+        # NOTE: wheel bindings are registered ONCE from __init__ (_bind_wheel_once).
+        # They used to live here, but bind_all(add="+") inside _build_ui stacked a
+        # fresh duplicate handler set on every theme/font/scale change and nothing
+        # ever unbound them, so scrolling got progressively jumpier over a session.
+        # bind_all lives on Tk's "all" bindtag, not on the widgets _build_ui
+        # destroys, so registering once is correct.
 
-    def _bind_ctrl_wheel_recursive(self, widget):
-        # Only bind on Frame/Label/Checkbutton – skip Entry/Text to avoid swallowing keys
-        cls = widget.winfo_class()
-        if cls not in ("TEntry","Entry","Text","Scrollbar","TScrollbar"):
-            for seq in ("<Control-MouseWheel>","<Control-Button-4>","<Control-Button-5>"):
-                try: widget.bind(seq, self._ctrl_scroll, add="+")
-                except Exception: pass
-            for seq in ("<MouseWheel>","<Button-4>","<Button-5>"):
-                try: widget.bind(seq, self._scroll, add="+")
-                except Exception: pass
-        for child in widget.winfo_children():
-            self._bind_ctrl_wheel_recursive(child)
+    def _bind_wheel_once(self):
+        """Register wheel/ctrl-wheel handlers exactly once per session.
+
+        Replaces the old _bind_ctrl_wheel_recursive whole-tree walk, which added
+        6 bindings to ~1,500 widgets after every _build_ui. That walk was already
+        provably redundant: it ran once at startup, so every widget created by any
+        later tab switch only ever had these bind_all bindings - and scrolling
+        works on those tabs today."""
+        if getattr(self, "_wheel_bound", False): return
+        for _seq in ("<MouseWheel>","<Button-4>","<Button-5>"):
+            self.root.bind_all(_seq, self._scroll, add="+")
+        for _seq in ("<Control-MouseWheel>","<Control-Button-4>","<Control-Button-5>"):
+            self.root.bind_all(_seq, self._ctrl_scroll, add="+")
+        self._wheel_bound = True
 
     # ── retheme ───────────────────────────────────────────────────────────────
     def _retheme_main_only(self):
