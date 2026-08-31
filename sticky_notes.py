@@ -457,8 +457,443 @@ def load_priorities():
 def save_priorities(items):
     _cache_write("priorities", PRIORITIES_FILE, items, ("priorities",))
 
-# NOTE: save_recurring() (stage 9) must call _cache_write likewise so the
-# habits tab is dirtied when a recurring rule changes.
+# ── recurring rules engine ──────────────────────────────────
+import calendar as _rc_cal   # json/os/datetime/uuid already imported at line 11
+
+RECUR_FILE = os.path.join(os.path.expanduser("~"), ".leonote_recurring.json")
+
+REC_KINDS       = ("daily", "weekly", "monthly", "once")
+REC_CATCHUP     = ("collapse", "all", "skip")
+REC_MAX_SPAWN   = 10      # hard cap on tasks spawned per rule per catch-up
+REC_SCAN_DAYS   = 366     # never look further back than this when catching up
+REC_WD_SHORT    = ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")   # 0=Mon, date.weekday()
+REC_TICK_MS     = 60000   # reminder heartbeat
+
+
+# ── schema ────────────────────────────────────────────────────────────────────
+def _rec_norm(r):
+    """Normalize one rule in place. Mirrors _norm() for tasks. Never raises."""
+    r.setdefault("id",       str(uuid.uuid4()))
+    r.setdefault("title",    "Recurring task")
+    r.setdefault("created",  datetime.date.today().isoformat())
+    r.setdefault("anchor",   r.get("created") or datetime.date.today().isoformat())
+    r.setdefault("until",    None)          # None | "YYYY-MM-DD" inclusive end
+    r.setdefault("time",     "")            # "" | "HH:MM"  (display only, never converted)
+    r.setdefault("priority", "none")        # priority given to the spawned task
+    r.setdefault("mode",     "task")        # "task" -> spawn into tasks | "reminder" -> row only
+    r.setdefault("catchup",  "collapse")    # collapse | all | skip
+    r.setdefault("notify",   True)          # badge/toast/sound on fire
+    r.setdefault("active",   True)
+    r.setdefault("last_fired",   None)      # "YYYY-MM-DD" — highest materialized occurrence
+    r.setdefault("snooze_until", None)      # "YYYY-MM-DD" — suppressed up to & including
+    r.setdefault("skip",     [])            # ["YYYY-MM-DD"] occurrences the user waved off
+    r.setdefault("deleted",  False)
+    r.setdefault("deleted_at", None)
+    rule = r.get("rule")
+    if not isinstance(rule, dict): rule = {}
+    kind = rule.get("kind")
+    if kind not in REC_KINDS: kind = "weekly"
+    out = {"kind": kind}
+    if kind == "daily":
+        out["interval"] = max(1, int(rule.get("interval", 1) or 1))
+    elif kind == "weekly":
+        days = [int(d) for d in rule.get("days", []) if isinstance(d, (int, float)) and 0 <= int(d) <= 6]
+        out["days"]     = sorted(set(days)) or [datetime.date.today().weekday()]
+        out["interval"] = max(1, int(rule.get("interval", 1) or 1))
+    elif kind == "monthly":
+        out["day"]      = min(31, max(1, int(rule.get("day", 1) or 1)))
+        out["interval"] = max(1, int(rule.get("interval", 1) or 1))
+    r["rule"] = out
+    if r["catchup"] not in REC_CATCHUP: r["catchup"] = "collapse"
+    if r["priority"] not in ("none", "low", "medium", "high"): r["priority"] = "none"
+    if r["mode"] not in ("task", "reminder"): r["mode"] = "task"
+    if not isinstance(r["skip"], list): r["skip"] = []
+    return r
+
+
+def _rec_date(s):
+    """Tolerant ISO date parse. Accepts 'YYYY-MM-DD' and 'YYYY-MM-DDTHH:MM'. None on junk."""
+    if not s or not isinstance(s, str): return None
+    try:
+        return datetime.date.fromisoformat(s[:10])
+    except Exception:
+        return None
+
+
+# ── persistence (cached; zero disk reads on the render path) ──────────────────
+_rec_cache = None     # module-level, invalidated by save_recurring()
+
+
+def load_recurring(force=False):
+    """Return {"version":1,"rules":[...],"log":{rid:[iso,...]}}. Cached in memory."""
+    global _rec_cache
+    if _rec_cache is not None and not force:
+        return _rec_cache
+    data = {"version": 1, "rules": [], "log": {}}
+    if os.path.exists(RECUR_FILE):
+        try:
+            with open(RECUR_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                data["rules"] = [_rec_norm(r) for r in raw.get("rules", []) if isinstance(r, dict)]
+                lg = raw.get("log", {})
+                if isinstance(lg, dict):
+                    data["log"] = {k: list(v) for k, v in lg.items() if isinstance(v, list)}
+        except Exception:
+            pass
+    _rec_cache = data
+    return data
+
+
+def save_recurring(data):
+    """Atomic write (temp + fsync + os.replace). The tasks/habits files are not; this is."""
+    global _rec_cache
+    _rec_cache = data
+    tmp = RECUR_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, RECUR_FILE)
+    except Exception:
+        try:
+            with open(RECUR_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(tmp): os.remove(tmp)
+        except Exception:
+            pass
+    # C3: the habits tab hosts the recurring list and is frame-cached, so a
+    # rule change must invalidate it or the new rule will not appear.
+    if _app_instance:
+        _app_instance._mark_tabs_dirty(("habits",))
+
+
+# ── calendar helpers ──────────────────────────────────────────────────────────
+def _rec_monday(d):
+    return d - datetime.timedelta(days=d.weekday())
+
+
+def _rec_add_months(y, m, n):
+    t = (y * 12 + (m - 1)) + n
+    return t // 12, (t % 12) + 1
+
+
+def _rec_clamp_dom(y, m, day):
+    """Day-of-month with month-end clamping: 31 -> 28/29/30/31. Day 31 IS 'last day'."""
+    return datetime.date(y, m, min(day, _rc_cal.monthrange(y, m)[1]))
+
+
+# ── the engine ────────────────────────────────────────────────────────────────
+def rec_is_occurrence(rule, d, anchor):
+    """True if calendar date d is an occurrence of rule (ignores until/skip/active)."""
+    if d < anchor: return False
+    k = rule.get("kind")
+    if k == "once":
+        return d == anchor
+    if k == "daily":
+        n = max(1, int(rule.get("interval", 1)))
+        return (d - anchor).days % n == 0
+    if k == "weekly":
+        n = max(1, int(rule.get("interval", 1)))
+        if d.weekday() not in rule.get("days", []): return False
+        return ((_rec_monday(d) - _rec_monday(anchor)).days // 7) % n == 0
+    if k == "monthly":
+        n = max(1, int(rule.get("interval", 1)))
+        if ((d.year * 12 + d.month) - (anchor.year * 12 + anchor.month)) % n != 0: return False
+        return d == _rec_clamp_dom(d.year, d.month, int(rule.get("day", 1)))
+    return False
+
+
+def next_occurrence(rule, from_date, anchor=None, until=None):
+    """First occurrence on or after from_date. Returns date or None.
+
+    Pure calendar arithmetic — date + timedelta only, no datetime, no tzinfo.
+    A 23h or 25h DST day cannot move a calendar date, so 'every Tuesday' is
+    exact through every transition; date.today() already reads local civil time.
+    """
+    if anchor is None:
+        anchor = from_date
+    start = from_date if from_date > anchor else anchor
+    k     = rule.get("kind")
+    res   = None
+
+    if k == "once":
+        res = anchor if anchor >= from_date else None
+
+    elif k == "daily":
+        n    = max(1, int(rule.get("interval", 1)))
+        gap  = (start - anchor).days
+        step = ((gap + n - 1) // n) * n          # ceil to the next multiple
+        res  = anchor + datetime.timedelta(days=step)
+
+    elif k == "weekly":
+        n    = max(1, int(rule.get("interval", 1)))
+        days = sorted(rule.get("days", []))
+        if days:
+            wk  = _rec_monday(start)
+            aw  = _rec_monday(anchor)
+            rem = (((wk - aw).days // 7) % n)
+            if rem: wk += datetime.timedelta(weeks=(n - rem))
+            for _ in range(2):                    # this valid week, then the next one
+                for wd in days:
+                    cand = wk + datetime.timedelta(days=wd)
+                    if cand >= start and cand >= anchor:
+                        res = cand
+                        break
+                if res: break
+                wk += datetime.timedelta(weeks=n)
+
+    elif k == "monthly":
+        n   = max(1, int(rule.get("interval", 1)))
+        dom = int(rule.get("day", 1))
+        am  = anchor.year * 12 + (anchor.month - 1)
+        sm  = start.year * 12 + (start.month - 1)
+        off = sm - am
+        if off < 0: off = 0
+        if off % n: off += n - (off % n)          # align to the anchor's interval grid
+        for _ in range(400):                      # bounded; 2 iterations in practice
+            y, m = _rec_add_months(anchor.year, anchor.month, off)
+            cand = _rec_clamp_dom(y, m, dom)
+            if cand >= start and cand >= anchor:
+                res = cand
+                break
+            off += n
+
+    if res is not None and until is not None and res > until:
+        return None
+    return res
+
+
+def next_occurrences(r, from_date, count=3):
+    """Convenience for the dialog preview: the next `count` dates for a normalized rule."""
+    anchor = _rec_date(r.get("anchor")) or datetime.date.today()
+    until  = _rec_date(r.get("until"))
+    skip   = set(r.get("skip", []))
+    out, cur = [], from_date
+    for _ in range(count * 8 + 24):
+        if len(out) >= count: break
+        d = next_occurrence(r.get("rule", {}), cur, anchor, until)
+        if d is None: break
+        if d.isoformat() not in skip:
+            out.append(d)
+        cur = d + datetime.timedelta(days=1)
+    return out
+
+
+def rec_next_due(r, today):
+    """Next *actionable* date for a rule: the pending occurrence, or the next future one.
+
+    Returns (date|None, overdue_bool). Snooze pushes the shown date forward without
+    losing the occurrence.
+    """
+    if not r.get("active", True) or r.get("deleted"):
+        return None, False
+    anchor = _rec_date(r.get("anchor")) or today
+    until  = _rec_date(r.get("until"))
+    skip   = set(r.get("skip", []))
+    lf     = _rec_date(r.get("last_fired"))
+    floor  = max(anchor, (lf + datetime.timedelta(days=1)) if lf else anchor,
+                 today - datetime.timedelta(days=REC_SCAN_DAYS))
+    cur = floor
+    for _ in range(64):
+        d = next_occurrence(r.get("rule", {}), cur, anchor, until)
+        if d is None: return None, False
+        if d.isoformat() in skip:
+            cur = d + datetime.timedelta(days=1)
+            continue
+        sn = _rec_date(r.get("snooze_until"))
+        if sn and sn >= today and d <= today:
+            return sn + datetime.timedelta(days=1), False   # suppressed through sn
+        return d, d < today
+    return None, False
+
+
+def due_occurrences(r, last_fired, today, limit=REC_MAX_SPAWN):
+    """Occurrence dates that should have been materialized by `today` and were not.
+
+    Window is (last_fired, today], floored at max(anchor, created, today-REC_SCAN_DAYS)
+    so a rule anchored in 2020 cannot back-fill six years of history on creation.
+    Returns (dates, truncated_bool) — ascending, at most `limit` (the most RECENT ones).
+    """
+    today   = today if isinstance(today, datetime.date) else _rec_date(today)
+    anchor  = _rec_date(r.get("anchor")) or today
+    created = _rec_date(r.get("created")) or anchor
+    until   = _rec_date(r.get("until"))
+    skip    = set(r.get("skip", []))
+    lf      = last_fired if isinstance(last_fired, datetime.date) else _rec_date(last_fired)
+
+    floor = max(anchor, created, today - datetime.timedelta(days=REC_SCAN_DAYS))
+    if lf is not None:
+        floor = max(floor, lf + datetime.timedelta(days=1))
+
+    out, cur, truncated = [], floor, False
+    while cur <= today:
+        d = next_occurrence(r.get("rule", {}), cur, anchor, until)
+        if d is None or d > today: break
+        if d.isoformat() not in skip:
+            out.append(d)
+            if len(out) > limit * 4:              # bound memory on pathological daily rules
+                truncated = True
+                out = out[-limit:]
+        cur = d + datetime.timedelta(days=1)
+    if len(out) > limit:
+        truncated = True
+        out = out[-limit:]
+    return out, truncated
+
+
+def rec_occ_key(rid, d):
+    """Idempotency key. One materialization per (rule, occurrence date), ever."""
+    return "%s@%s" % (rid, d.isoformat() if hasattr(d, "isoformat") else d)
+
+
+def rec_catch_up_plan(rules, today, existing_keys, log=None):
+    """PURE. Decide what to materialize. No I/O, no Tk, no mutation of `rules`.
+
+    rules         : list of normalized rule dicts
+    today         : datetime.date
+    existing_keys : set of rec_occ_key() already present in tasks (2nd idempotency guard)
+    log           : {rid: [iso,...]} completion log; an already-completed occurrence
+                    is never re-spawned
+
+    Returns (spawns, updates, fired_ids)
+      spawns  : [{"rule_id","title","date","missed","priority","time","mode","notify","key"}]
+      updates : {rid: {"last_fired": iso}}   — apply with rules[i].update(...)
+      fired   : [rid, ...] rules that produced something new (notification surface)
+    """
+    log     = log or {}
+    spawns  = []
+    updates = {}
+    fired   = []
+
+    for r in rules:
+        if r.get("deleted") or not r.get("active", True):
+            continue
+        rid = r.get("id")
+        sn  = _rec_date(r.get("snooze_until"))
+        if sn and sn >= today:
+            continue                                  # snoozed: do not advance last_fired
+
+        occ, _trunc = due_occurrences(r, r.get("last_fired"), today)
+        if not occ:
+            continue
+
+        done = set(log.get(rid, []))
+        mode = r.get("catchup", "collapse")
+        if mode == "skip":
+            wanted = [occ[-1]] if occ[-1] == today else []
+        elif mode == "all":
+            wanted = occ
+        else:                                          # collapse (default)
+            wanted = [occ[-1]]
+
+        made = False
+        for d in wanted:
+            key = rec_occ_key(rid, d)
+            if key in existing_keys or d.isoformat() in done:
+                continue
+            spawns.append({
+                "rule_id":  rid,
+                "title":    r.get("title", "Recurring task"),
+                "date":     d,
+                "missed":   (len(occ) - 1) if mode == "collapse" else 0,
+                "priority": r.get("priority", "none"),
+                "time":     r.get("time", ""),
+                "mode":     r.get("mode", "task"),
+                "notify":   bool(r.get("notify", True)),
+                "key":      key,
+            })
+            made = True
+
+        # last_fired always advances to the newest accounted-for occurrence, even when
+        # every candidate was skipped or deduped. That is what makes an app closed for
+        # a week produce ONE task instead of seven, and every rerun a no-op.
+        updates[rid] = {"last_fired": occ[-1].isoformat()}
+        if made and r.get("notify", True):
+            fired.append(rid)
+
+    return spawns, updates, fired
+
+
+# ── cadence-aware stats (does NOT touch _habit_streak & friends) ──────────────
+def rec_streak(r, log, today):
+    """Consecutive completed occurrences ending at the most recent past occurrence.
+
+    Counts EXPECTED occurrences, not calendar days. 'Every Tuesday' done every
+    Tuesday is a streak of N here; _habit_streak (line 189) would report 1 forever
+    because Wed+Thu trip its two-consecutive-misses break at line 199.
+    """
+    rid    = r.get("id")
+    done   = set((log or {}).get(rid, []))
+    anchor = _rec_date(r.get("anchor")) or today
+    until  = _rec_date(r.get("until"))
+    skip   = set(r.get("skip", []))
+    occ, cur = [], max(anchor, today - datetime.timedelta(days=REC_SCAN_DAYS))
+    while cur <= today and len(occ) < 400:
+        d = next_occurrence(r.get("rule", {}), cur, anchor, until)
+        if d is None or d > today: break
+        if d.isoformat() not in skip: occ.append(d)
+        cur = d + datetime.timedelta(days=1)
+    streak = 0
+    for d in reversed(occ):
+        if d.isoformat() in done:
+            streak += 1
+        elif d == today:
+            continue                    # today is still open, not a miss
+        else:
+            break
+    return streak
+
+
+def rec_rate(r, log, today, window=8):
+    """(hits, total) over the last `window` expected occurrences. Honest denominator."""
+    rid    = r.get("id")
+    done   = set((log or {}).get(rid, []))
+    anchor = _rec_date(r.get("anchor")) or today
+    until  = _rec_date(r.get("until"))
+    occ, cur = [], max(anchor, today - datetime.timedelta(days=REC_SCAN_DAYS))
+    while cur <= today and len(occ) < 400:
+        d = next_occurrence(r.get("rule", {}), cur, anchor, until)
+        if d is None or d > today: break
+        occ.append(d)
+        cur = d + datetime.timedelta(days=1)
+    occ = occ[-window:]
+    return sum(1 for d in occ if d.isoformat() in done), len(occ)
+
+
+# ── display helpers ───────────────────────────────────────────────────────────
+def rec_fmt_date(d, today):
+    """'today' / 'tomorrow' / 'Tue 3 Sep' / 'Tue 3 Sep 2027'."""
+    if d is None: return "—"
+    if d == today: return "today"
+    if d == today + datetime.timedelta(days=1): return "tomorrow"
+    if d == today - datetime.timedelta(days=1): return "yesterday"
+    s = d.strftime("%a %#d %b") if os.name == "nt" else d.strftime("%a %-d %b")
+    if d.year != today.year: s += d.strftime(" %Y")
+    return s
+
+
+def rec_describe(r):
+    """Human cadence label: 'Weekly · Tu', 'Every 3 days', 'Monthly · day 31 (last)'."""
+    rule = r.get("rule", {})
+    k, n = rule.get("kind"), int(rule.get("interval", 1) or 1)
+    if k == "once":
+        return "Once"
+    if k == "daily":
+        return "Daily" if n == 1 else "Every %d days" % n
+    if k == "weekly":
+        names = ", ".join(REC_WD_SHORT[d] for d in sorted(rule.get("days", [])))
+        base  = "Weekly" if n == 1 else "Every %d weeks" % n
+        return "%s · %s" % (base, names or "—")
+    if k == "monthly":
+        dom  = int(rule.get("day", 1))
+        base = "Monthly" if n == 1 else "Every %d months" % n
+        return "%s · day %d%s" % (base, dom, " (last)" if dom == 31 else "")
+    return "—"
 
 def _habit_streak(habit_id, log):
     """Return streak; forgiving = 1 missed day allowed."""
