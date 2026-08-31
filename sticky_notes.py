@@ -143,49 +143,78 @@ def load_tasks():
         except Exception: pass
     return []
 
+_app_instance = None  # set in App.__init__
+
+# ── in-memory data cache with write-through ───────────────────────────────────
+# DOCS_FILE / HABITS_FILE / PRIORITIES_FILE are opened nowhere else in this
+# file, so these six functions are the single choke point for both caching and
+# dirty-flagging. Names and signatures are unchanged: no call site changes.
+#
+# CONTRACT:
+#   load_X()  -> returns the LIVE cached object, NOT a copy. Callers that
+#                mutate it in place must still call save_X() to persist.
+#                (Every existing call site already does exactly that.)
+#   save_X(v) -> writes to disk, installs v as the new cache, and marks the
+#                tabs that display it dirty.
+_cache = {"docs": None, "habits": None, "priorities": None}
+
+def _cache_read(key, path, make_default):
+    if _cache[key] is None:
+        data = None
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = None
+        _cache[key] = make_default() if data is None else data
+    return _cache[key]
+
+def _cache_write(key, path, value, dirty_tabs):
+    _cache[key] = value
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(value, f, indent=2, ensure_ascii=False)
+    if _app_instance:
+        _app_instance._mark_tabs_dirty(dirty_tabs)
+
+def invalidate_data_cache(*keys):
+    """Force the next load_* to re-read from disk. Safety valve for any
+    out-of-band write to the JSON files."""
+    for k in (keys or tuple(_cache.keys())):
+        _cache[k] = None
+
 def save_tasks(tasks):
     with open(TASKS_FILE,"w",encoding="utf-8") as f:
         json.dump(tasks, f, indent=2, ensure_ascii=False)
     # Invalidate app-level task pool cache
     if _app_instance:
         _app_instance._tasks_cache = None
-
-_app_instance = None  # set in App.__init__
+        _app_instance._mark_tabs_dirty(
+            ("active", "archive", "search", "trash", "stats"))
 
 # ── docs ──────────────────────────────────────────────────────────────────────
 def load_docs():
-    if os.path.exists(DOCS_FILE):
-        try:
-            with open(DOCS_FILE,"r",encoding="utf-8") as f: return json.load(f)
-        except Exception: pass
-    return []
+    return _cache_read("docs", DOCS_FILE, list)
 
 def save_docs(docs):
-    with open(DOCS_FILE,"w",encoding="utf-8") as f:
-        json.dump(docs, f, indent=2, ensure_ascii=False)
+    _cache_write("docs", DOCS_FILE, docs, ("docs", "trash"))
 
 # ── habits ────────────────────────────────────────────────────────────────────
 def load_habits():
-    if os.path.exists(HABITS_FILE):
-        try:
-            with open(HABITS_FILE,"r",encoding="utf-8") as f: return json.load(f)
-        except Exception: pass
-    return {"habits":[], "log":{}}
+    return _cache_read("habits", HABITS_FILE, lambda: {"habits": [], "log": {}})
 
 def save_habits(data):
-    with open(HABITS_FILE,"w",encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    _cache_write("habits", HABITS_FILE, data, ("habits", "trash"))
 
+# ── priorities ────────────────────────────────────────────────────────────────
 def load_priorities():
-    if os.path.exists(PRIORITIES_FILE):
-        try:
-            with open(PRIORITIES_FILE,"r",encoding="utf-8") as f: return json.load(f)
-        except Exception: pass
-    return []
+    return _cache_read("priorities", PRIORITIES_FILE, list)
 
 def save_priorities(items):
-    with open(PRIORITIES_FILE,"w",encoding="utf-8") as f:
-        json.dump(items, f, indent=2, ensure_ascii=False)
+    _cache_write("priorities", PRIORITIES_FILE, items, ("priorities",))
+
+# NOTE: save_recurring() (stage 9) must call _cache_write likewise so the
+# habits tab is dirtied when a recurring rule changes.
 
 def _habit_streak(habit_id, log):
     """Return streak; forgiving = 1 missed day allowed."""
@@ -4480,6 +4509,14 @@ class App:
         self.root.geometry(f"{nw}x{nh}+{nx}+{ny}")
 
     def _resize_stop(self, e): self._resize_edge=None; self._resize_start=None
+
+    def _mark_tabs_dirty(self, tabs):
+        """Mark cached tab frames stale. Defensive: save_*() can fire from
+        _purge_old_trash() during __init__, long before _tab_dirty exists."""
+        d = getattr(self, "_tab_dirty", None)
+        if d is None: return
+        for t in tabs:
+            d.add(t)
 
     # ── debounced work (coalesce bursts into one job) ─────────────────────────
     def _save_cfg_debounced(self, delay=500):
