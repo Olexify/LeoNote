@@ -570,6 +570,10 @@ def save_recurring(data):
     # rule change must invalidate it or the new rule will not appear.
     if _app_instance:
         _app_instance._mark_tabs_dirty(("habits",))
+        # _rec_catch_up parks itself until 00:01 tomorrow whenever nothing is
+        # due. Without this, a rule created (or edited, un-snoozed, re-enabled)
+        # during that quiet window would not fire until the next calendar day.
+        _app_instance._rec_quiet_until = None
 
 
 # ── calendar helpers ──────────────────────────────────────────────────────────
@@ -1094,6 +1098,7 @@ class App:
         # needs its own clock.
         self._maint_job = None
         self.root.after(2000, lambda: self._maintenance_tick(first=True))
+        self._rec_init()
 
         if self.cfg.get("show_in_tray"): self._setup_tray()
         if self.cfg.get("start_hidden_to_tray") and self.cfg.get("show_in_tray"):
@@ -3961,6 +3966,7 @@ class App:
                 bg=T["bg"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
                 justify="center",pady=24).pack(fill="x")
+            self._render_recurring(T)   # recurring list lives below habits
             return
 
         # ── overall summary bar ───────────────────────────────────────────
@@ -4163,6 +4169,8 @@ class App:
             bg=T["btn_bg"],fg=T["btn_fg"],relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
             padx=10,pady=4,cursor="hand2",activebackground=T["btn_hover"]).pack(pady=8)
+
+        self._render_recurring(T)       # recurring / reminders, below habits
 
     def _add_habit(self, data):
         new_h = {"id": str(uuid.uuid4()), "name": "New Habit",
@@ -4998,6 +5006,7 @@ class App:
                     "tasks":    self.tasks,
                     "docs":     load_docs(),
                     "habits":   load_habits(),
+                    "recurring": load_recurring(),
                     "gamification": {
                         "xp":            self.cfg.get("xp",0),
                         "tasks_created": self.cfg.get("tasks_created",0),
@@ -5047,6 +5056,16 @@ class App:
                                 _merged = set(_clog.get(_day, [])) | set(_ids or [])
                                 _clog[_day] = sorted(_merged)
                             save_habits(_cur)
+                    if "recurring" in raw and isinstance(raw["recurring"], dict):
+                        _cr = load_recurring()
+                        _hr = {r.get("id") for r in _cr.get("rules", [])}
+                        for _rr in raw["recurring"].get("rules", []):
+                            if isinstance(_rr, dict) and _rr.get("id") not in _hr:
+                                _cr.setdefault("rules", []).append(_rec_norm(_rr))
+                        _rlog = _cr.setdefault("log", {})
+                        for _k, _v in (raw["recurring"].get("log", {}) or {}).items():
+                            _rlog[_k] = sorted(set(_rlog.get(_k, [])) | set(_v or []))
+                        save_recurring(_cr)
                     if "gamification" in raw:
                         g=raw["gamification"]
                         self.cfg["xp"]=max(self.cfg.get("xp",0), g.get("xp",0))
@@ -5135,6 +5154,8 @@ class App:
         if getattr(self, "_maint_job", None):
             try: self.root.after_cancel(self._maint_job)
             except Exception: pass
+        try: self._rec_cancel()
+        except Exception: pass
 
         save_config(self.cfg); save_tasks(self.tasks); self._destroy_tray(); self.root.destroy()
 
@@ -5325,6 +5346,7 @@ class App:
             self._purge_old_doc_trash()
             self._purge_old_habit_trash()
             self._apply_date_jumps()
+            self._rec_catch_up()          # C5: one clock, not two
         except Exception: pass
         if not first and self.current_tab in self._tab_dirty:
             self._render_tasks()
@@ -5602,6 +5624,686 @@ class App:
         content.pack(side="left", fill="both", expand=True)
         outer._pri_bar = bar          # _cycle_priority: outer._pri_bar.configure(bg=...)
         return outer, body, content
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RECURRING — engine wiring (timer, catch-up, notification)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _rec_init(self):
+        """Call once at the end of __init__ (after _build_ui)."""
+        self.cfg.setdefault("rec_sound", False)       # OFF by default: no audible surprise
+        self.cfg.setdefault("rec_toast", True)
+        self.cfg.setdefault("rec_tray_balloon", True)
+        self.cfg.setdefault("rec_sound_file", "workstart.wav")
+        self._rec_stop        = False
+        self._rec_job         = None
+        self._rec_quiet_until = None   # datetime; tick is a no-op until then
+        self._rec_last_focus  = 0.0
+        self._rec_badge       = None
+        self._rec_pending     = 0
+        self.root.bind("<FocusIn>", self._rec_on_focus, add="+")
+        self.root.after(400, lambda: self._rec_catch_up(render=True))
+        # C5: no second timer. _maintenance_tick (stage 5) is the single
+        # 60s clock and calls _rec_catch_up() itself.
+
+    def _rec_on_focus(self, e=None):
+        """Window regained focus (also covers wake-from-sleep where after() drifts)."""
+        if getattr(e, "widget", None) is not self.root: return
+        now = now_dt().timestamp()
+        if now - getattr(self, "_rec_last_focus", 0.0) < 30: return
+        self._rec_last_focus = now
+        self._rec_quiet_until = None
+        try: self._rec_catch_up(render=True)
+        except Exception: pass
+
+    def _rec_task_keys(self):
+        """Materialization keys already present in self.tasks (2nd idempotency guard)."""
+        keys = set()
+        for t in self.tasks:
+            rid = t.get("rec_id")
+            if rid: keys.add(rec_occ_key(rid, t.get("rec_date", "")))
+        return keys
+
+    def _rec_catch_up(self, render=False):
+        """Idempotent. Safe to call as often as you like — the expensive path only
+        runs when a rule actually crossed an occurrence boundary."""
+        now = now_dt()
+        qu  = getattr(self, "_rec_quiet_until", None)
+        if qu and now < qu:
+            return 0
+        today = now.date()
+        data  = load_recurring()                       # cached: no disk read
+        rules = data.get("rules", [])
+        if not rules:
+            self._rec_quiet_until = now + datetime.timedelta(minutes=10)
+            return 0
+
+        spawns, updates, fired = rec_catch_up_plan(
+            rules, today, self._rec_task_keys(), data.get("log", {}))
+
+        if not spawns and not updates:
+            # nothing until at least tomorrow -> sleep the tick until 00:01
+            self._rec_quiet_until = datetime.datetime.combine(
+                today + datetime.timedelta(days=1), datetime.time(0, 1))
+            self._rec_update_badge()
+            return 0
+        self._rec_quiet_until = None
+
+        by_id = {r.get("id"): r for r in rules}
+        made  = []
+        for sp in spawns:
+            if sp.get("mode") != "task":
+                continue
+            iso   = sp["date"].isoformat()
+            title = sp["title"]
+            if sp.get("missed"):
+                title = "%s  (+%d missed)" % (title, sp["missed"])
+            t = _norm({
+                "id":       str(uuid.uuid4()),
+                "text":     title,
+                "done":     False,
+                "created":  now.isoformat(timespec="seconds"),
+                "priority": sp.get("priority", "none"),
+                "subtasks": [],
+                "rec_id":   sp["rule_id"],
+                "rec_date": iso,
+                "due_date": iso,
+                "due_time": sp.get("time", ""),
+                # Opt out of the existing due-day priority ratchet at lines 929-930:
+                # a weekly task must not creep one notch closer to "high" every week.
+                "due_jumped":       True,
+                "scheduled_jumped": True,
+            })
+            self.tasks.insert(0, t)
+            made.append(t)
+
+        for rid, patch in updates.items():
+            r = by_id.get(rid)
+            if r: r.update(patch)
+
+        if made:
+            save_tasks(self.tasks)
+        save_recurring(data)
+
+        if fired:
+            self._rec_notify([by_id[i] for i in fired if i in by_id], len(made))
+        self._rec_update_badge()
+        if render and self.current_tab in ("active", "habits"):
+            self._render_tasks_debounced(60)
+        return len(made)
+
+    # ── notification surfaces ────────────────────────────────────────────────
+    def _rec_notify(self, rules, n_tasks):
+        if not rules: return
+        first = rules[0].get("title", "Reminder")
+        body  = first if len(rules) == 1 else "%s  +%d more" % (first, len(rules) - 1)
+        hidden = True
+        try: hidden = (self.root.state() == "withdrawn") or not self.root.winfo_viewable()
+        except Exception: pass
+
+        if self.cfg.get("rec_sound", False):
+            try: self._pomo_sound(self.cfg.get("rec_sound_file", "workstart.wav"))
+            except Exception: pass
+
+        if hidden and self.cfg.get("rec_tray_balloon", True) and self._tray_icon:
+            try:
+                self._tray_icon.notify(body, "LeoNote — due now")
+                return
+            except Exception:
+                pass                                    # backend has no balloon: fall through
+
+        if not hidden and self.cfg.get("rec_toast", True):
+            self._rec_toast(body)
+
+    def _rec_toast(self, msg):
+        """Borderless self-dismissing toast — same shape as _pomo_skip's popup (4624-4666)."""
+        T = self.T
+        try:
+            w = tk.Toplevel(self.root)
+            w.overrideredirect(True)
+            w.attributes("-topmost", True)
+            w.configure(bg=T["header_bg"])
+            f = tk.Frame(w, bg=T["item_bg"], padx=12, pady=8)
+            f.pack(padx=1, pady=1)
+            tk.Label(f, text="🔔  " + msg, bg=T["item_bg"], fg=T["text"],
+                font=(self.cfg.get("ui_font", "Segoe UI Variable"), 9, "bold")).pack()
+            w.update_idletasks()
+            x = self.root.winfo_rootx() + max(0, self.root.winfo_width() - w.winfo_width() - 14)
+            y = self.root.winfo_rooty() + max(0, self.root.winfo_height() - w.winfo_height() - 40)
+            w.geometry("+%d+%d" % (x, y))
+            w.bind("<Button-1>", lambda e: (self._set_tab("habits"), w.destroy()))
+            self.root.after(3500, lambda: w.winfo_exists() and w.destroy())
+        except Exception:
+            pass
+
+    def _rec_update_badge(self):
+        """Status-bar pill: '🔔 2'. Created lazily so _build_ui is left untouched."""
+        try:
+            today = datetime.date.today()
+            data  = load_recurring()
+            open_ids, n = set(), 0
+            for t in self.tasks:
+                if t.get("rec_id") and not t.get("done") and not t.get("deleted"):
+                    open_ids.add(t["rec_id"]); n += 1
+            for r in data.get("rules", []):
+                if r.get("deleted") or not r.get("active", True): continue
+                if r.get("id") in open_ids: continue      # already counted as a task
+                d, _over = rec_next_due(r, today)
+                if d is not None and d <= today: n += 1
+            self._rec_pending = n
+            b = getattr(self, "_rec_badge", None)
+            if b is None or not b.winfo_exists():
+                if not n: return
+                parent = self.status_lbl.master
+                b = tk.Label(parent, text="", bg=self.T["header_bg"], fg=self.T["archive"],
+                    font=(self.cfg.get("ui_font", "Segoe UI Variable"), 8, "bold"),
+                    padx=6, pady=4, cursor="hand2")
+                b.bind("<Button-1>", lambda e: self._set_tab("habits"))
+                self._rec_badge = b
+            if n:
+                b.configure(text="🔔 %d" % n, bg=self.T["header_bg"], fg=self.T["archive"])
+                if not b.winfo_ismapped(): b.pack(side="right")
+            else:
+                if b.winfo_ismapped(): b.pack_forget()
+        except Exception:
+            pass
+
+    def _rec_cancel(self):
+        """Call from _close() next to the pomodoro after_cancel block."""
+        self._rec_stop = True
+        job = getattr(self, "_rec_job", None)
+        if job:
+            try: self.root.after_cancel(job)
+            except Exception: pass
+        self._rec_job = None
+
+    # ── XP, awarded once per (rule, occurrence) ──────────────────────────────
+    def _rec_award(self, rid, iso, amount=10):
+        """The completion log IS the ledger: no entry -> award, entry -> no-op.
+        This is the only place recurring XP is granted — see the drift note in risks."""
+        if not rid or not iso: return False
+        data = load_recurring()
+        lst  = data.setdefault("log", {}).setdefault(rid, [])
+        if iso in lst:
+            return False
+        lst.append(iso)
+        if amount:
+            self.cfg["xp"] = self.cfg.get("xp", 0) + amount
+            self._save_cfg_debounced(200)
+        save_recurring(data)
+        return True
+
+    def _rec_unaward(self, rid, iso, amount=10):
+        if not rid or not iso: return False
+        data = load_recurring()
+        lst  = data.setdefault("log", {}).setdefault(rid, [])
+        if iso not in lst:
+            return False
+        lst.remove(iso)
+        if amount:
+            self.cfg["xp"] = max(0, self.cfg.get("xp", 0) - amount)
+            self._save_cfg_debounced(200)
+        save_recurring(data)
+        return True
+
+    # ── row actions ──────────────────────────────────────────────────────────
+    def _rec_mark_done(self, rid):
+        """Complete THIS occurrence. Resolves 'today' at CLICK time, never at render
+        time — toggle_habit's closed-over `today` (3247 -> 3348) is exactly that bug."""
+        today = datetime.date.today()
+        data  = load_recurring()
+        r = next((x for x in data.get("rules", []) if x.get("id") == rid), None)
+        if not r: return
+        # An open spawned task pins WHICH occurrence this click closes; otherwise use
+        # the pending one; a future-only rule is refused.
+        occ  = None
+        open_t = [t for t in self.tasks
+                  if t.get("rec_id") == rid and t.get("rec_date")
+                  and not t.get("done") and not t.get("deleted")]
+        if open_t:
+            open_t.sort(key=lambda t: t.get("rec_date", ""))
+            occ = _rec_date(open_t[0]["rec_date"])
+        if occ is None:
+            d, _over = rec_next_due(r, today)
+            if d is None or d > today:
+                return          # nothing pending — refuse (this is the XP-farm guard)
+            occ = d
+        iso = occ.isoformat()
+        if iso in data.setdefault("log", {}).setdefault(rid, []):
+            return                          # this occurrence is already completed
+        lf = _rec_date(r.get("last_fired"))
+        if lf is None or occ > lf:
+            r["last_fired"] = iso           # done early -> do not fire again for this one
+        r["snooze_until"] = None
+        closed = False
+        for t in open_t:
+            if t.get("rec_date") == iso:
+                t["done"] = True
+                t["completed_at"] = now_dt().isoformat(timespec="seconds")
+                self.cfg["tasks_done"] = self.cfg.get("tasks_done", 0) + 1
+                self.cfg["xp"] = self.cfg.get("xp", 0) + 15    # same rate as _toggle
+                save_tasks(self.tasks)
+                closed = True
+                break
+        # ledger entry always; XP only when no task has already paid for it
+        self._rec_award(rid, iso, amount=(0 if closed else 10))
+        save_recurring(data)
+        self._rec_quiet_until = None
+        self._rec_update_badge()
+        self._render_tasks_debounced(30)
+
+    def _rec_snooze(self, rid, days=1):
+        today = datetime.date.today()
+        data  = load_recurring()
+        r = next((x for x in data.get("rules", []) if x.get("id") == rid), None)
+        if not r: return
+        r["snooze_until"] = (today + datetime.timedelta(days=days - 1)).isoformat() \
+            if days > 1 else today.isoformat()
+        save_recurring(data)
+        self._rec_quiet_until = None
+        self._rec_update_badge()
+        self._render_tasks_debounced(30)
+
+    def _rec_skip_next(self, rid):
+        """Wave off the pending occurrence — it will not fire and will not count
+        against the streak's denominator."""
+        today = datetime.date.today()
+        data  = load_recurring()
+        r = next((x for x in data.get("rules", []) if x.get("id") == rid), None)
+        if not r: return
+        d, _over = rec_next_due(r, today)
+        if d is None: return
+        iso = d.isoformat()
+        if iso not in r.setdefault("skip", []):
+            r["skip"].append(iso)
+        r["skip"] = r["skip"][-60:]
+        lf = _rec_date(r.get("last_fired"))
+        if d <= today and (lf is None or d > lf):
+            r["last_fired"] = iso
+        save_recurring(data)
+        self._rec_quiet_until = None
+        self._rec_update_badge()
+        self._render_tasks_debounced(30)
+
+    def _rec_toggle_active(self, rid):
+        data = load_recurring()
+        r = next((x for x in data.get("rules", []) if x.get("id") == rid), None)
+        if not r: return
+        r["active"] = not r.get("active", True)
+        save_recurring(data)
+        self._rec_quiet_until = None
+        self._render_tasks_debounced(30)
+
+    def _rec_delete(self, rid):
+        """Soft delete — mirrors habits so a mis-click is recoverable from the file."""
+        data = load_recurring()
+        r = next((x for x in data.get("rules", []) if x.get("id") == rid), None)
+        if not r: return
+        r["deleted"] = True
+        r["deleted_at"] = now_dt().isoformat(timespec="seconds")
+        r["active"] = False
+        save_recurring(data)
+        self._rec_update_badge()
+        self._render_tasks_debounced(30)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RECURRING — render (appended at the bottom of the Habits tab)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _render_recurring(self, T):
+        """Called from the END of _render_habits. Purely additive: it does not read
+        or touch the habits file, the habit loop, or any habit helper."""
+        fnt   = self.cfg.get("ui_font", "Segoe UI Variable")
+        data  = load_recurring()                       # cached: no disk read
+        rules = [r for r in data.get("rules", []) if not r.get("deleted")]
+        log   = data.get("log", {})
+        today = datetime.date.today()
+
+        tk.Frame(self.task_frame, bg=T["separator"], height=1).pack(fill="x", pady=(10, 6), padx=2)
+
+        hdr = tk.Frame(self.task_frame, bg=T["bg"]); hdr.pack(fill="x", padx=6, pady=(0, 4))
+        tk.Label(hdr, text="🔁  Recurring", bg=T["bg"], fg=T["text"],
+            font=(fnt, 11, "bold")).pack(side="left")
+        tk.Button(hdr, text="+ Recurring", command=lambda: self._rec_dialog(None),
+            bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=(fnt, 9),
+            padx=8, pady=3, cursor="hand2", activebackground=T["btn_hover"]).pack(side="right")
+
+        if not rules:
+            tk.Label(self.task_frame,
+                text="Nothing repeating yet.\ne.g. \"check marketplace sales\" every Tuesday",
+                bg=T["bg"], fg=T["muted"], font=(fnt, 9), justify="center",
+                pady=18).pack(fill="x")
+            return
+
+        # order: overdue first, then due today, then by next date
+        def _sort_key(r):
+            d, over = rec_next_due(r, today)
+            if d is None:  return (3, datetime.date.max)
+            if over:       return (0, d)
+            if d == today: return (1, d)
+            return (2, d)
+        for r in sorted(rules, key=_sort_key):
+            self._rec_row(T, r, log, today)
+
+    def _rec_row(self, T, r, log, today):
+        fnt = self.cfg.get("ui_font", "Segoe UI Variable")
+        rid = r.get("id")
+        d, overdue = rec_next_due(r, today)
+        active  = r.get("active", True)
+        due_now = active and d is not None and d <= today
+        streak  = rec_streak(r, log, today)
+        hits, tot = rec_rate(r, log, today, window=8)
+
+        card = tk.Frame(self.task_frame, bg=T["item_bg"], pady=5, padx=8)
+        card.pack(fill="x", pady=2)
+        top = tk.Frame(card, bg=T["item_bg"]); top.pack(fill="x")
+
+        pip = "🔥 %d" % streak if streak else "🔁"
+        tk.Label(top, text=pip, bg=T["item_bg"],
+            fg=(T["check_done"] if streak else T["muted"]),
+            font=(fnt, 9, "bold"), width=5, anchor="w").pack(side="left")
+
+        title_wrap = tk.Frame(top, bg=T["item_bg"]); title_wrap.pack(side="left", fill="x", expand=True)
+        name = tk.Label(title_wrap, text=r.get("title", ""), bg=T["item_bg"],
+            fg=(T["text"] if active else T["muted"]), font=(fnt, 10), anchor="w", justify="left")
+        name.pack(anchor="w", fill="x")
+        name.bind("<Double-Button-1>", lambda e, i=rid: self._rec_dialog(i))
+
+        # right-hand buttons (packed right-to-left)
+        del_b = tk.Button(top, text="✕", bg=T["item_bg"], fg=T["muted"], relief="flat", bd=0,
+            padx=4, font=(fnt, 8), cursor="hand2", activebackground=T["item_hover"])
+        del_b._confirm = False
+        def _del(b=del_b, i=rid):
+            if not b._confirm:
+                b._confirm = True
+                b.configure(text="sure?", fg=T["close_hover"])
+                self.root.after(2600, lambda: (b.winfo_exists() and b._confirm and
+                    (setattr(b, "_confirm", False), b.configure(text="✕", fg=T["muted"]))))
+                return
+            self._rec_delete(i)
+        del_b.configure(command=_del)
+        del_b.pack(side="right")
+
+        tk.Button(top, text="⋯", command=lambda i=rid: self._rec_dialog(i),
+            bg=T["item_bg"], fg=T["muted"], relief="flat", bd=0, padx=4,
+            font=(fnt, 9), cursor="hand2", activebackground=T["item_hover"]).pack(side="right")
+
+        if due_now:
+            tk.Button(top, text="✓ Done", command=lambda i=rid: self._rec_mark_done(i),
+                bg=T["check_done"], fg="#ffffff", relief="flat", font=(fnt, 9),
+                padx=8, pady=3, cursor="hand2",
+                activebackground=T["btn_hover"]).pack(side="right", padx=(0, 6))
+            tk.Button(top, text="⏰", command=lambda i=rid: self._rec_snooze(i, 1),
+                bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=(fnt, 8),
+                padx=5, pady=3, cursor="hand2",
+                activebackground=T["btn_hover"]).pack(side="right", padx=(0, 4))
+            tk.Button(top, text="↷", command=lambda i=rid: self._rec_skip_next(i),
+                bg=T["btn_bg"], fg=T["btn_fg"], relief="flat", font=(fnt, 8),
+                padx=5, pady=3, cursor="hand2",
+                activebackground=T["btn_hover"]).pack(side="right", padx=(0, 4))
+        else:
+            tk.Button(top, text=("on" if active else "off"),
+                command=lambda i=rid: self._rec_toggle_active(i),
+                bg=(T["btn_bg"] if active else T["separator"]), fg=T["btn_fg"],
+                relief="flat", font=(fnt, 8), padx=6, pady=3, cursor="hand2",
+                activebackground=T["btn_hover"]).pack(side="right", padx=(0, 6))
+
+        # meta line: cadence · next: Tue 3 Sep · 6/8
+        if not active:
+            nxt, col = "paused", T["muted"]
+        elif d is None:
+            nxt, col = "finished", T["muted"]
+        elif overdue:
+            nxt, col = "overdue · was %s" % rec_fmt_date(d, today), T["high"]
+        elif d == today:
+            nxt, col = "due today", T["check_done"]
+        else:
+            nxt, col = "next: %s" % rec_fmt_date(d, today), T["muted"]
+        sn = _rec_date(r.get("snooze_until"))
+        if sn and sn >= today and active:
+            nxt, col = "snoozed → %s" % rec_fmt_date(sn + datetime.timedelta(days=1), today), T["medium"]
+
+        meta = tk.Frame(card, bg=T["item_bg"]); meta.pack(fill="x", pady=(1, 0))
+        tk.Label(meta, text="     " + rec_describe(r), bg=T["item_bg"], fg=T["muted"],
+            font=(fnt, 8)).pack(side="left")
+        tk.Label(meta, text="  ·  " + nxt, bg=T["item_bg"], fg=col,
+            font=(fnt, 8, "bold")).pack(side="left")
+        if tot:
+            tk.Label(meta, text="%d/%d" % (hits, tot), bg=T["item_bg"], fg=T["muted"],
+                font=(fnt, 8)).pack(side="right")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RECURRING — add / edit dialog
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _rec_dialog(self, rid=None):
+        T     = self.T
+        fnt   = self.cfg.get("ui_font", "Segoe UI Variable")
+        data  = load_recurring()
+        today = datetime.date.today()
+        editing = None
+        if rid:
+            editing = next((x for x in data.get("rules", []) if x.get("id") == rid), None)
+        draft = _rec_norm(dict(editing) if editing else
+                          {"title": "", "anchor": today.isoformat(),
+                           "rule": {"kind": "weekly", "days": [today.weekday()], "interval": 1}})
+
+        win = tk.Toplevel(self.root)
+        win.title("Recurring")
+        win.configure(bg=T["bg"])
+        win.attributes("-topmost", True)
+        win.transient(self.root)
+        win.resizable(False, False)
+
+        body = tk.Frame(win, bg=T["bg"], padx=14, pady=12); body.pack(fill="both", expand=True)
+
+        def _lbl(txt, parent=None):
+            tk.Label(parent or body, text=txt, bg=T["bg"], fg=T["muted"],
+                font=(fnt, 8, "bold"), anchor="w").pack(fill="x", pady=(8, 2))
+
+        _lbl("What repeats?")
+        title_var = tk.StringVar(value=draft.get("title", ""))
+        ent = tk.Entry(body, textvariable=title_var, bg=T["entry_bg"], fg=T["entry_fg"],
+            insertbackground=T["entry_fg"], relief="flat", font=(fnt, 10),
+            highlightthickness=1, highlightbackground=T["separator"], width=34)
+        ent.pack(fill="x", ipady=4)
+        ent.focus_set()
+
+        _lbl("Repeats")
+        kind_var = tk.StringVar(value=draft["rule"]["kind"])
+        krow = tk.Frame(body, bg=T["bg"]); krow.pack(fill="x")
+
+        wk_frame  = tk.Frame(body, bg=T["bg"])
+        day_state = {i: (i in draft["rule"].get("days", [])) for i in range(7)}
+        chips     = {}
+        int_frame = tk.Frame(body, bg=T["bg"])
+        int_var   = tk.StringVar(value=str(draft["rule"].get("interval", 1)))
+        dom_frame = tk.Frame(body, bg=T["bg"])
+        dom_var   = tk.StringVar(value=str(draft["rule"].get("day", today.day)))
+
+        anchor_state = [_rec_date(draft.get("anchor")) or today]
+        time_var   = tk.StringVar(value=draft.get("time", ""))
+        pri_var    = tk.StringVar(value=draft.get("priority", "none"))
+        mode_var   = tk.StringVar(value=draft.get("mode", "task"))
+        cu_var     = tk.StringVar(value=draft.get("catchup", "collapse"))
+        notify_var = tk.BooleanVar(value=bool(draft.get("notify", True)))
+
+        preview = tk.Label(body, text="", bg=T["bg"], fg=T["check_done"],
+            font=(fnt, 9, "bold"), anchor="w", justify="left", wraplength=300)
+
+        def _collect():
+            """Build a normalized rule dict from the current widget state."""
+            k = kind_var.get()
+            try: iv = max(1, min(52, int(int_var.get() or 1)))
+            except Exception: iv = 1
+            try: dm = max(1, min(31, int(dom_var.get() or 1)))
+            except Exception: dm = 1
+            rule = {"kind": k, "interval": iv}
+            if k == "weekly":
+                rule["days"] = [i for i in range(7) if day_state[i]] or [anchor_state[0].weekday()]
+            elif k == "monthly":
+                rule["day"] = dm
+            out = dict(draft)
+            out.update({
+                "title":    title_var.get().strip() or "Recurring task",
+                "rule":     rule,
+                "anchor":   anchor_state[0].isoformat(),
+                "time":     time_var.get().strip(),
+                "priority": pri_var.get(),
+                "mode":     mode_var.get(),
+                "catchup":  cu_var.get(),
+                "notify":   bool(notify_var.get()),
+            })
+            return _rec_norm(out)
+
+        def _refresh(*_a):
+            k = kind_var.get()
+            for f in (wk_frame, int_frame, dom_frame):
+                f.pack_forget()
+            if k != "once":     int_frame.pack(fill="x", pady=(4, 0))
+            if k == "weekly":   wk_frame.pack(fill="x", pady=(6, 0))
+            if k == "monthly":  dom_frame.pack(fill="x", pady=(6, 0))
+            nxt = next_occurrences(_collect(), today, 3)
+            if nxt:
+                preview.configure(
+                    text="Next:  " + " · ".join(rec_fmt_date(x, today) for x in nxt),
+                    fg=T["check_done"])
+            else:
+                preview.configure(text="Never occurs — check the start date.", fg=T["high"])
+
+        for key, label in (("daily", "Every N days"), ("weekly", "Weekly"),
+                           ("monthly", "Monthly"), ("once", "Once")):
+            tk.Radiobutton(krow, text=label, value=key, variable=kind_var,
+                bg=T["bg"], fg=T["text"], selectcolor=T["entry_bg"],
+                activebackground=T["bg"], font=(fnt, 9), command=_refresh
+            ).pack(side="left", padx=(0, 6))
+
+        tk.Label(int_frame, text="every", bg=T["bg"], fg=T["muted"], font=(fnt, 9)).pack(side="left")
+        tk.Spinbox(int_frame, from_=1, to=52, width=3, textvariable=int_var,
+            bg=T["entry_bg"], fg=T["entry_fg"], relief="flat", font=(fnt, 9),
+            command=_refresh).pack(side="left", padx=4)
+        int_unit = tk.Label(int_frame, text="", bg=T["bg"], fg=T["muted"], font=(fnt, 9))
+        int_unit.pack(side="left")
+        int_var.trace_add("write", lambda *a: (int_unit.configure(
+            text={"daily": "day(s)", "weekly": "week(s)", "monthly": "month(s)"}
+                 .get(kind_var.get(), "")), _refresh()))
+
+        for i, nm in enumerate(REC_WD_SHORT):
+            def _tog(i=i):
+                day_state[i] = not day_state[i]
+                c = chips[i]
+                c.configure(bg=(T["check_done"] if day_state[i] else T["item_bg"]),
+                            fg=("#ffffff" if day_state[i] else T["muted"]))
+                _refresh()
+            c = tk.Button(wk_frame, text=nm, command=_tog, width=3, relief="flat",
+                font=(fnt, 8, "bold"), cursor="hand2", padx=2, pady=3,
+                bg=(T["check_done"] if day_state[i] else T["item_bg"]),
+                fg=("#ffffff" if day_state[i] else T["muted"]),
+                activebackground=T["btn_hover"])
+            c.pack(side="left", padx=1)
+            chips[i] = c
+
+        tk.Label(dom_frame, text="on day", bg=T["bg"], fg=T["muted"], font=(fnt, 9)).pack(side="left")
+        tk.Spinbox(dom_frame, from_=1, to=31, width=3, textvariable=dom_var,
+            bg=T["entry_bg"], fg=T["entry_fg"], relief="flat", font=(fnt, 9),
+            command=_refresh).pack(side="left", padx=4)
+        tk.Label(dom_frame, text="(31 = last day of every month)", bg=T["bg"],
+            fg=T["muted"], font=(fnt, 8)).pack(side="left")
+        dom_var.trace_add("write", lambda *a: _refresh())
+
+        _lbl("Starts")
+        drow = tk.Frame(body, bg=T["bg"]); drow.pack(fill="x")
+        date_btn = tk.Button(drow, text="", bg=T["btn_bg"], fg=T["btn_fg"], relief="flat",
+            font=(fnt, 9), padx=8, pady=3, cursor="hand2", activebackground=T["btn_hover"])
+        def _pick():
+            def _on(sel):
+                d = sel[0] if isinstance(sel, tuple) else sel
+                anchor_state[0] = d
+                date_btn.configure(text=d.strftime("%d.%m.%Y"))
+                _refresh()
+            self._show_calendar_picker(date_btn, anchor_state[0], _on)
+        date_btn.configure(text=anchor_state[0].strftime("%d.%m.%Y"), command=_pick)
+        date_btn.pack(side="left")
+        tk.Label(drow, text="  at", bg=T["bg"], fg=T["muted"], font=(fnt, 9)).pack(side="left")
+        tk.Entry(drow, textvariable=time_var, width=6, bg=T["entry_bg"], fg=T["entry_fg"],
+            relief="flat", font=(fnt, 9), highlightthickness=1,
+            highlightbackground=T["separator"]).pack(side="left", padx=4, ipady=2)
+        tk.Label(drow, text="HH:MM (optional)", bg=T["bg"], fg=T["muted"],
+            font=(fnt, 8)).pack(side="left")
+
+        preview.pack(fill="x", pady=(10, 2))
+
+        # options (folded away — the defaults are right for almost everyone)
+        adv_open = [False]
+        adv = tk.Frame(body, bg=T["bg"])
+        adv_lbl = tk.Label(body, text="▸ Options", bg=T["bg"], fg=T["muted"],
+            font=(fnt, 8, "bold"), anchor="w", cursor="hand2")
+        adv_lbl.pack(fill="x", pady=(8, 0))
+        def _toggle_adv(e=None):
+            adv_open[0] = not adv_open[0]
+            if adv_open[0]:
+                adv.pack(fill="x", pady=(4, 0)); adv_lbl.configure(text="▾ Options")
+            else:
+                adv.pack_forget(); adv_lbl.configure(text="▸ Options")
+        adv_lbl.bind("<Button-1>", _toggle_adv)
+
+        o1 = tk.Frame(adv, bg=T["bg"]); o1.pack(fill="x", pady=2)
+        tk.Label(o1, text="Creates", bg=T["bg"], fg=T["muted"], font=(fnt, 8),
+            width=10, anchor="w").pack(side="left")
+        for v, lab in (("task", "a real task"), ("reminder", "reminder only")):
+            tk.Radiobutton(o1, text=lab, value=v, variable=mode_var, bg=T["bg"], fg=T["text"],
+                selectcolor=T["entry_bg"], activebackground=T["bg"],
+                font=(fnt, 8)).pack(side="left", padx=(0, 6))
+
+        o2 = tk.Frame(adv, bg=T["bg"]); o2.pack(fill="x", pady=2)
+        tk.Label(o2, text="Priority", bg=T["bg"], fg=T["muted"], font=(fnt, 8),
+            width=10, anchor="w").pack(side="left")
+        ttk.Combobox(o2, textvariable=pri_var, state="readonly", width=8,
+            values=["none", "low", "medium", "high"]).pack(side="left")
+
+        o3 = tk.Frame(adv, bg=T["bg"]); o3.pack(fill="x", pady=2)
+        tk.Label(o3, text="If missed", bg=T["bg"], fg=T["muted"], font=(fnt, 8),
+            width=10, anchor="w").pack(side="left")
+        ttk.Combobox(o3, textvariable=cu_var, state="readonly", width=22,
+            values=["collapse", "all", "skip"]).pack(side="left")
+        tk.Label(adv, text="collapse = one task for the newest missed date (recommended)\n"
+                           "all = one task per missed date   ·   skip = only fire on the day",
+            bg=T["bg"], fg=T["muted"], font=(fnt, 7), justify="left",
+            anchor="w").pack(fill="x", pady=(2, 4))
+
+        tk.Checkbutton(adv, text="Notify me (badge / toast / tray)", variable=notify_var,
+            bg=T["bg"], fg=T["text"], selectcolor=T["entry_bg"], activebackground=T["bg"],
+            font=(fnt, 8), anchor="w").pack(fill="x")
+
+        btns = tk.Frame(body, bg=T["bg"]); btns.pack(fill="x", pady=(12, 0))
+        def _save():
+            out = _collect()
+            if editing:
+                editing.update(out)
+                editing["snooze_until"] = None      # a cadence edit clears the snooze
+            else:
+                out["created"]    = today.isoformat()
+                out["last_fired"] = None
+                data.setdefault("rules", []).append(out)
+            save_recurring(data)
+            self._rec_quiet_until = None
+            win.destroy()
+            self._rec_catch_up(render=False)
+            self._rec_update_badge()
+            self._render_tasks_debounced(30)
+        tk.Button(btns, text="Save", command=_save, bg=T["check_done"], fg="#ffffff",
+            relief="flat", font=(fnt, 9, "bold"), padx=14, pady=4,
+            cursor="hand2").pack(side="right")
+        tk.Button(btns, text="Cancel", command=win.destroy, bg=T["btn_bg"], fg=T["btn_fg"],
+            relief="flat", font=(fnt, 9), padx=10, pady=4,
+            cursor="hand2").pack(side="right", padx=(0, 6))
+
+        ent.bind("<Return>", lambda e: _save())
+        win.bind("<Escape>", lambda e: win.destroy())
+        kind_var.trace_add("write", lambda *a: _refresh())
+        _refresh()
+        win.update_idletasks()
+        win.geometry("+%d+%d" % (self.root.winfo_rootx() + 30, self.root.winfo_rooty() + 60))
 
     # ── debounced work (coalesce bursts into one job) ─────────────────────────
     def _save_cfg_debounced(self, delay=500):
