@@ -75,6 +75,250 @@ THEMES = {
     "violet-night": {"bg":"#120b1f","header_bg":"#24123a","text":"#f1e7ff","muted":"#a38cbf","entry_bg":"#1a102a","entry_fg":"#f1e7ff","btn_bg":"#4c1d95","btn_fg":"#f1e7ff","btn_hover":"#6d28d9","check_done":"#22c55e","separator":"#24123a","item_bg":"#1a102a","item_hover":"#221434","tab_bg":"#221434","archive":"#c084fc","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
     "eclipse":      {"bg":"#0a0a0a","header_bg":"#1a1a1a","text":"#f2f2f2","muted":"#8a8a8a","entry_bg":"#111111","entry_fg":"#f2f2f2","btn_bg":"#2a2a2a","btn_fg":"#f2f2f2","btn_hover":"#3a3a3a","check_done":"#9ca3af","separator":"#1a1a1a","item_bg":"#111111","item_hover":"#181818","tab_bg":"#181818","archive":"#d4d4d8","close_hover":"#ef4444","low":"#60a5fa","medium":"#f59e0b","high":"#ef4444"},
 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DESIGN SYSTEM v1  —  colour math · derived tokens · type & space scale
+#  Paste the module-level half immediately AFTER the THEMES dict (~line 76).
+#  Paste the _AppMixin half INSIDE class App (de-indent one level, or simply
+#  make App inherit the mixin).  Nothing here mutates THEMES: every original
+#  key survives verbatim, so all 550+ existing T["..."] reads keep working.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── colour math (pure stdlib) ────────────────────────────────────────────────
+def _rgb(h):
+    h = h.lstrip("#")
+    if len(h) == 3: h = "".join(c * 2 for c in h)
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+def _hx(r, g, b):
+    f = lambda v: max(0, min(255, int(round(v))))
+    return "#%02x%02x%02x" % (f(r), f(g), f(b))
+
+def mix(a, b, t):
+    """t=0 -> a, t=1 -> b."""
+    ar, ag, ab = _rgb(a); br, bg, bb = _rgb(b)
+    return _hx(ar + (br - ar) * t, ag + (bg - ag) * t, ab + (bb - ab) * t)
+
+def lighten(c, t): return mix(c, "#ffffff", t)
+def darken(c, t):  return mix(c, "#000000", t)
+
+def _lin(v):
+    v /= 255.0
+    return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+def luminance(c):
+    r, g, b = _rgb(c)
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+def contrast(a, b):
+    la, lb = luminance(a), luminance(b)
+    if la < lb: la, lb = lb, la
+    return (la + 0.05) / (lb + 0.05)
+
+def is_dark(c): return luminance(c) < 0.30
+
+def chroma(c):
+    r, g, b = _rgb(c)
+    return (max(r, g, b) - min(r, g, b)) / 255.0
+
+def on(c, light="#ffffff", dark="#12100e"):
+    """Readable foreground for a background colour."""
+    return light if contrast(c, light) >= contrast(c, dark) else dark
+
+def step(base, ratio, toward=None, max_t=0.40):
+    """Nudge `base` until contrast(base, result) >= ratio. Used for elevation."""
+    tgt = toward or ("#ffffff" if is_dark(base) else "#000000")
+    t, out = 0.0, base
+    while t < max_t:
+        t += 0.02
+        out = mix(base, tgt, t)
+        if contrast(base, out) >= ratio: return out
+    return out
+
+def ensure(c, against, ratio, max_t=0.90):
+    """Nudge `c` away from `against` until it is legible on it."""
+    if contrast(c, against) >= ratio: return c
+    tgt = "#ffffff" if is_dark(against) else "#000000"
+    t, out = 0.0, c
+    while t < max_t:
+        t += 0.03
+        out = mix(c, tgt, t)
+        if contrast(out, against) >= ratio: return out
+    return out
+
+
+# ── derived token layer ──────────────────────────────────────────────────────
+_TOKEN_CACHE = {}
+
+def tokens(theme_name):
+    """THEMES[name] + ~30 derived tokens. Computed once per theme, then cached."""
+    t = _TOKEN_CACHE.get(theme_name)
+    if t is None:
+        t = _TOKEN_CACHE[theme_name] = _derive(THEMES[theme_name])
+    return t
+
+def _derive(P):
+    T   = dict(P)                       # every legacy key survives verbatim
+    bg  = P["bg"]
+    dk  = is_dark(bg)
+    T["is_dark"] = dk                   # <- the ONE dark test; kills all 3 lists
+
+    # accent = the palette's own identity hue. `archive` is already the deep,
+    # legible version of each theme's colour (sakura #be185d, lavender #7e22ce,
+    # peach #c2410c ...), so it is the honest accent. Do NOT derive it from
+    # check_done: that is the SUCCESS colour and is green on 9 themes whose
+    # identity is pink/purple — the accent would fight the palette.
+    cands = (P["archive"], P["btn_hover"], P["btn_bg"], P["header_bg"])
+    acc   = P["archive"] if contrast(P["archive"], bg) >= 2.0 else \
+            max(cands, key=lambda c: (chroma(c) + .08) * min(contrast(c, bg), 3.0))
+    T["accent"]      = ensure(acc, bg, 2.2)
+    T["accent_hi"]   = lighten(T["accent"], .14) if dk else darken(T["accent"], .12)
+    T["on_accent"]   = on(T["accent"])
+    T["accent_ring"] = mix(bg, T["accent"], .45)
+    # the tab underline sits on tab_bg, not bg — guarantee it there too
+    T["accent_ind"]  = ensure(T["accent"], P["tab_bg"], 2.6)
+
+    # surfaces — elevation is REAL on dark themes (a card can be lighter than
+    # the page). On light themes bg is already ~white, so there is no room to
+    # go up: the card stays paper-white and its edge is carried by `hairline`
+    # plus a 1-px `shadow_line`. That is the honest answer, not a compromise.
+    if dk:
+        T["surface"]      = step(bg, 1.16, "#ffffff", .35)
+        T["surface_2"]    = step(bg, 1.34, "#ffffff", .45)
+        T["surface_sunk"] = darken(bg, .30)
+        T["shadow_line"]  = darken(bg, .55)
+    else:
+        T["surface"]      = lighten(bg, .55)
+        T["surface_2"]    = darken(bg, .05)
+        T["surface_sunk"] = darken(bg, .05)
+        T["shadow_line"]  = darken(bg, .09)
+    s = T["surface"]
+    # washes are mixed into the SURFACE they sit on, not into bg — mixing into
+    # bg makes them invisible on every dark theme (measured 1.00-1.08).
+    T["accent_wash"]   = mix(s, T["accent"], .14)
+    T["accent_soft"]   = mix(s, T["accent"], .26)
+    T["surface_hover"] = ensure(mix(s, T["accent"], .16 if not dk else .12), s, 1.10, .60)
+    T["surface_press"] = ensure(mix(s, T["accent"], .28 if not dk else .22), s, 1.18, .70)
+
+    # hairlines — measured against the surface they actually sit on
+    T["hairline"]        = step(s, 1.30, None, .45)
+    T["hairline_strong"] = step(s, 1.85, None, .60)
+    T["divider"]         = step(bg, 1.22, None, .40)
+
+    # semantic aliases (so call sites stop overloading check_done / archive)
+    T["success"], T["warning"] = P["check_done"], P["medium"]
+    T["danger"],  T["info"]    = P["close_hover"], P["low"]
+    # *_text = the tone made legible ON ITS OWN CHIP (the tightest case, which
+    # also covers plain use on `surface`).
+    for k in ("success", "warning", "danger", "info", "accent"):
+        T[k + "_text"] = ensure(T[k], mix(s, T[k], .16), 4.5)
+    T["focus"]     = ensure(T["accent"], s, 3.0)
+    T["disabled"]  = mix(P["muted"], bg, .45)
+    T["tab_hover"] = step(P["tab_bg"], 1.14, None, .30)
+    T["scrim"]     = darken(bg, .55)
+    return T
+
+
+# ── type & space scale ───────────────────────────────────────────────────────
+# Sizes stay POSITIVE (points) so Tk's own `tk scaling` keeps honouring ui_scale.
+TYPE_SCALE = {
+    "micro":       (7,  ""),
+    "caption":     (8,  ""),
+    "caption_str": (8,  "bold"),
+    "body":        (10, ""),
+    "body_str":    (10, "bold"),
+    "title":       (12, "bold"),
+    "display":     (16, "bold"),
+    "hero":        (30, "bold"),
+}
+# 4-px rhythm: SPACE[k] == 4*k
+SPACE  = {0: 0, 1: 4, 2: 8, 3: 12, 4: 16, 5: 20, 6: 24, 8: 32}
+RADIUS = 10
+
+
+def round_rect_pts(x1, y1, x2, y2, r):
+    """Point list for a rounded rectangle. Use with create_polygon(smooth=True)."""
+    r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+    return [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+
+
+class RoundedCard(tk.Canvas):
+    """A rounded, bordered card drawn on a Canvas, hosting a normal Frame.
+
+    Use `card.body` as the parent for content. Height auto-tracks the body.
+
+    Caveats — real, not theoretical:
+      * Canvas does not antialias. Corners are stair-stepped. Keep radius <= 10
+        and keep `stroke` within ~1.4 contrast of `fill`; at that size it reads
+        clean (verified at 4x zoom). Above r=14 the steps show and it looks cheap.
+      * The canvas is opaque: `behind` MUST be the true parent background.
+      * The hosted Frame has square corners, so it is inset by 0.30*r — the
+        exact distance at which a square corner sits inside the arc
+        (p >= r*(1 - 1/sqrt(2)) ~= 0.293r). Do not shrink that inset.
+      * Costs 2 widgets + 1 canvas item + a <Configure> handler per card. Fine
+        for the <= 40 cards of a Focus/Stats screen. NOT for a 300-row task
+        list — use the flat `_card(rounded=False)` hairline card there.
+      * Mouse-wheel events do not bubble out of a nested Canvas: run the app's
+        _bind_ctrl_wheel_recursive over the card after building it.
+    """
+
+    def __init__(self, parent, fill, stroke, behind, radius=RADIUS, pad=8, **kw):
+        super().__init__(parent, bg=behind, bd=0, highlightthickness=0,
+                         takefocus=0, height=1, **kw)
+        self._fill, self._stroke, self._r = fill, stroke, radius
+        self._inset = max(pad, int(radius * 0.30) + 1)
+        self._h = 0
+        self._shape = self.create_polygon(0, 0, 0, 0, fill=fill, outline=stroke,
+                                          width=1, smooth=True, splinesteps=12)
+        self.body = tk.Frame(self, bg=fill, bd=0, highlightthickness=0)
+        self._win = self.create_window(self._inset, self._inset,
+                                       window=self.body, anchor="nw")
+        self.body.bind("<Configure>", self._sync, add="+")
+        self.bind("<Configure>", self._redraw, add="+")
+        self.after_idle(self._redraw)   # kick: the canvas starts 1px tall
+
+    def _sync(self, _e=None):
+        """Canvas does not grow to fit its window item — we must set height."""
+        h = self.body.winfo_reqheight() + self._inset * 2
+        if abs(h - self._h) > 1:
+            self._h = h
+            self.configure(height=h)
+
+    def _redraw(self, _e=None):
+        w = self.winfo_width()
+        if w > 4:                                   # push our width into the body
+            self.itemconfigure(self._win, width=w - self._inset * 2)
+        self._sync()                                # ...then pull the body's height
+        h = self.winfo_height()
+        if w < 4 or h < 4: return
+        self.coords(self._shape, *round_rect_pts(1, 1, w - 1, h - 1, self._r))
+
+    def repaint(self, fill=None, stroke=None):
+        """Hover/selected states: recolour the shape AND every child of body."""
+        if fill:
+            self._fill = fill
+            self.itemconfigure(self._shape, fill=fill)
+        if stroke:
+            self._stroke = stroke
+            self.itemconfigure(self._shape, outline=stroke)
+        self._tint(self.body, self._fill)
+
+    def _tint(self, w, bg):
+        try:
+            if w.winfo_class() in ("Frame", "Label", "Checkbutton", "Button", "Canvas"):
+                w.configure(bg=bg)
+        except Exception:
+            pass
+        for c in w.winfo_children():
+            self._tint(c, bg)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  App methods — paste INSIDE class App (next to _save_cfg_debounced, ~4483).
+#  Delete the `class _AppMixin:` line and de-indent, or make App inherit it.
+
 PRIORITIES  = ["none","low","medium","high"]
 UI_FONTS    = [
     "Segoe UI Variable", "Segoe UI", "Calibri", "Helvetica", "Arial",
@@ -405,7 +649,7 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self.root.bind("<Configure>", self._on_configure)
         self.root.bind("<Map>",       self._on_map)
-        self.T = THEMES[self.cfg["theme"]]
+        self.T = tokens(self.cfg["theme"])
         self.search_var = tk.StringVar(master=self.root)
         self._apply_window_mode(first=True)
         self._build_ui()
@@ -688,7 +932,7 @@ class App:
 
     # ── retheme ───────────────────────────────────────────────────────────────
     def _retheme_main_only(self):
-        self.T = THEMES[self.cfg["theme"]]
+        self.T = tokens(self.cfg["theme"])
         old_tab = self.current_tab
         self._build_ui()
         self.current_tab = old_tab
@@ -719,12 +963,10 @@ class App:
 
     # ── titlebar ──────────────────────────────────────────────────────────────
     def _soft_pin_color(self):
-        darkish = {"dark","crimson","forest","emerald","midnight","space","violet-night","eclipse"}
-        visible_light = {"ocean","rose","lavender","peach","sky","slate","coral","sand","island","yellow"}
-        name = self.cfg.get("theme")
-        if name in darkish:    return self.T["btn_hover"]
-        if name in visible_light: return self.T["btn_bg"]
-        return self.T["separator"]
+        # was two hardcoded theme-name sets covering only 18 of 27 themes; the
+        # other 9 silently fell through to `separator`. accent_soft is derived
+        # per theme and is guaranteed to read against the titlebar everywhere.
+        return self.T["accent_soft"] if self.cfg.get("always_on_top") else self.T["header_bg"]
 
     def _build_titlebar(self):
         T = self.T
@@ -766,7 +1008,7 @@ class App:
 
     def _refresh_pin(self):
         if self._pin_btn:
-            self._pin_btn.configure(bg=self._soft_pin_color() if self.cfg.get("always_on_top") else self.T["header_bg"])
+            self._pin_btn.configure(bg=self._soft_pin_color())
 
     # ── tabs ──────────────────────────────────────────────────────────────────
     def _trash_items(self):
@@ -800,15 +1042,6 @@ class App:
             save_docs(kept)
 
 
-    def _mktab(self, parent, text, cmd, compact=False):
-        T = self.T
-        b = tk.Button(parent,text=text,command=cmd,
-            bg=T["tab_bg"],fg=T["text"],relief="flat",bd=0,
-            padx=8 if compact else 12,pady=5,cursor="hand2",
-            font=("Segoe UI Variable",9,"bold"),activebackground=T["btn_hover"])
-        b.pack(side="left",padx=(6,0),pady=4)
-        return b
-
     def _refresh_tabs(self):
         T = self.T
         use_pri = self.cfg.get("use_priorities_tab", True)
@@ -833,10 +1066,10 @@ class App:
             (self._tab_search,     "search"),
         ]
         for tab, name in tab_map:
-            tab.configure(bg=T["btn_bg"] if self.current_tab==name else T["tab_bg"], fg=T["text"])
+            self._paint_tab(tab, self.current_tab == name)
         if self._trash_items() or self._trash_docs() or self._trash_habits():
             self._tab_bin.pack(side="left",padx=(6,0),pady=4)
-            self._tab_bin.configure(bg=T["btn_bg"] if self.current_tab=="trash" else T["tab_bg"], fg=T["text"])
+            self._paint_tab(self._tab_bin, self.current_tab == "trash")
         else:
             self._tab_bin.pack_forget()
             if self.current_tab == "trash":
@@ -2095,9 +2328,10 @@ class App:
     }
 
     def _pri_medal(self, rank):
-        dark_themes = {"dark","dusk","slate-teal","mochi","pine","storm","amber-dark",
-                       "crimson","forest","emerald","midnight","space","void","lava","aurora","neon"}
-        pool = self._MEDAL_DARK if self.cfg.get("theme","default") in dark_themes else self._MEDAL_COLORS
+        # was a hardcoded name set that listed four themes which do not exist
+        # (void/lava/aurora/neon) and omitted eclipse + violet-night, where the
+        # medal cards rendered at 1.08 contrast - literally unreadable.
+        pool = self._MEDAL_DARK if self.T["is_dark"] else self._MEDAL_COLORS
         return pool.get(rank, {"bg":self.T["item_bg"],"bar":self.T["separator"],
                                 "badge":self.T["muted"],"label":f"#{rank+1}","ring":self.T["separator"]})
 
@@ -4265,18 +4499,9 @@ class App:
                 selectcolor=self.T["entry_bg"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9),command=apply_theme)
             r.pack(side="left")
-            _SWATCH_COLORS = {
-                "yellow":"#f5cc00","dark":"#3f3d38","light":"#e6e4df",
-                "sakura":"#ffb3cf","mint":"#86efac","ocean":"#93c5fd",
-                "rose":"#fda4af","lavender":"#d8b4fe","peach":"#fdba74",
-                "sky":"#7dd3fc","slate":"#cbd5e1","coral":"#fb7185",
-                "sand":"#e9c46a","island":"#67d4b7","dusk":"#433e6a",
-                "slate-teal":"#2a4f5e","mochi":"#4a3230","pine":"#2a5238",
-                "storm":"#2e3f55","amber-dark":"#6b4a00","crimson":"#5b1f2b",
-                "forest":"#235336","emerald":"#0f5b50","midnight":"#1d4e89",
-                "space":"#2d2560","violet-night":"#4c1d95","eclipse":"#2a2a2a",
-            }
-            preview_bg = _SWATCH_COLORS.get(name, samp["check_done"])
+            # was a 27-entry literal copy of btn_bg, rebuilt on every loop pass
+            # and 4,100 lines away from the palette it duplicated.
+            preview_bg = THEMES.get(name, {}).get("btn_bg", samp["check_done"])
             sw=tk.Label(f,text="  ",bg=preview_bg,width=2,relief="flat"); sw.pack(side="left",padx=(4,0))
             self._settings_widgets["frame_bg"].append(f); self._settings_widgets["radio"].append(r); self._settings_widgets["swatch"].append(sw)
 
@@ -4669,6 +4894,279 @@ class App:
         if not first and self.current_tab in self._tab_dirty:
             self._render_tasks()
         self._maint_job = self.root.after(60000, self._maintenance_tick)
+
+
+    # ── scale-aware primitives ───────────────────────────────────────────────
+    def _px(self, n):
+        """Scale a STRUCTURAL pixel value. Never use on font sizes — Tk's own
+        `tk scaling` already scales point-sized fonts, so doing both double-scales."""
+        if not n: return 0
+        return max(1, int(round(n * float(self.cfg.get("ui_scale", 1.0)))))
+
+    def _sp(self, k):
+        """Spacing on the 4-px rhythm. _sp(2) == 8px at scale 1.0."""
+        return self._px(SPACE.get(k, k))
+
+    def _font(self, role="body", weight=None, over=False):
+        size, w = TYPE_SCALE.get(role, TYPE_SCALE["body"])
+        if weight is not None: w = weight
+        if over: w = (w + " overstrike").strip()
+        fam = self.cfg.get("ui_font", "Segoe UI Variable")
+        return (fam, size, w) if w else (fam, size)
+
+    # ── uniform interaction states ───────────────────────────────────────────
+    def _interactive(self, w, base, hover, press=None, group=()):
+        """Hover + pressed on one widget (and any siblings that must move with
+        it). Replaces `activebackground`, which in Tk fires on PRESS, not hover
+        — which is why 192 of the app's ~200 controls look dead until clicked."""
+        T = self.T
+        if press is None:
+            press = lighten(hover, .10) if T["is_dark"] else darken(hover, .08)
+        members = (w,) + tuple(group)
+        def paint(c):
+            for x in members:
+                try: x.configure(bg=c)
+                except Exception: pass
+        w._ds_paint, w._ds_base, w._ds_hover = paint, base, hover
+        w.bind("<Enter>",           lambda e: paint(hover), add="+")
+        w.bind("<Leave>",           lambda e: paint(base),  add="+")
+        w.bind("<ButtonPress-1>",   lambda e: paint(press), add="+")
+        w.bind("<ButtonRelease-1>", lambda e: paint(hover), add="+")
+        return w
+
+    def _focusable(self, w, ring=None):
+        """Keyboard focus ring. The 2-px highlight is ALWAYS reserved and merely
+        recoloured, so gaining focus never reflows the layout."""
+        T = self.T
+        try:
+            w.configure(takefocus=1, highlightthickness=self._px(2),
+                        highlightbackground=w.cget("bg"),
+                        highlightcolor=ring or T["focus"])
+        except Exception: pass
+        return w
+
+    # ── factories ────────────────────────────────────────────────────────────
+    def _hairline(self, parent, pad=0, color=None, vertical=False):
+        T = self.T
+        f = tk.Frame(parent, bg=color or T["divider"],
+                     **({"width": 1} if vertical else {"height": 1}))
+        f.pack(fill="y" if vertical else "x",
+               padx=self._px(pad) if not vertical else 0,
+               pady=0 if not vertical else self._px(pad))
+        return f
+
+    def _card(self, parent, rounded=None, radius=None, pad=None,
+              fill=None, stroke=None, hover=False, on_click=None):
+        """Returns (outer, body). Pack/grid `outer`; put content in `body`.
+
+        rounded=False -> Frame-in-Frame 1-px hairline card. 2 widgets, no
+                         redraw cost. Use this in long lists.
+        rounded=True  -> RoundedCard canvas. Use for Focus / Stats / Docs.
+        """
+        T = self.T
+        fill   = fill   or T["surface"]
+        stroke = stroke or T["hairline"]
+        radius = RADIUS if radius is None else radius
+        pad    = self._sp(2) if pad is None else self._px(pad)
+        if rounded is None:
+            rounded = bool(self.cfg.get("ui_rounded", False))
+
+        if rounded:
+            outer = RoundedCard(parent, fill, stroke, T["bg"],
+                                radius=self._px(radius), pad=pad)
+            body  = outer.body
+            if hover:
+                hf, hs = T["surface_hover"], T["hairline_strong"]
+                outer.bind("<Enter>", lambda e: outer.repaint(hf, hs), add="+")
+                outer.bind("<Leave>", lambda e: outer.repaint(fill, stroke), add="+")
+        else:
+            outer = tk.Frame(parent, bg=stroke, bd=0, highlightthickness=0)
+            body  = tk.Frame(outer, bg=fill, bd=0, highlightthickness=0)
+            body.pack(fill="both", expand=True, padx=1, pady=1)
+            if hover:
+                self._interactive(body, fill, T["surface_hover"], group=(outer,))
+        if on_click:
+            for w in (outer, body):
+                w.bind("<Button-1>", lambda e: on_click(), add="+")
+                try: w.configure(cursor="hand2")
+                except Exception: pass
+        return outer, body
+
+    def _btn(self, parent, text, command=None, kind="ghost", role="body_str",
+             padx=None, pady=None, **kw):
+        """kind: primary | accent | ghost | quiet | danger"""
+        T = self.T
+        table = {
+            "primary": (T["accent"], T["on_accent"], T["accent_hi"]),
+            "accent":  (T["accent_wash"], T["accent_text"], T["accent_soft"]),
+            "ghost":   (T["btn_bg"], T["btn_fg"], T["btn_hover"]),
+            "quiet":   (T["bg"], T["muted"], T["surface_hover"]),
+            "danger":  (T["surface"], T["danger_text"],
+                        mix(T["surface"], T["danger"], .20)),
+        }
+        bg, fg, hov = table.get(kind, table["ghost"])
+        b = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                      relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+                      font=self._font(role),
+                      activebackground=hov, activeforeground=fg,
+                      padx=self._sp(3) if padx is None else self._px(padx),
+                      pady=self._px(6) if pady is None else self._px(pady), **kw)
+        self._interactive(b, bg, hov)
+        return b
+
+    def _chip(self, parent, text, tone="neutral", icon=""):
+        T = self.T
+        tones = {
+            "neutral": (T["surface_2"],                       T["muted"]),
+            "accent":  (T["accent_wash"],                     T["accent_text"]),
+            "success": (mix(T["surface"], T["success"], .16), T["success_text"]),
+            "warn":    (mix(T["surface"], T["warning"], .16), T["warning_text"]),
+            "danger":  (mix(T["surface"], T["danger"],  .16), T["danger_text"]),
+        }
+        bg, fg = tones.get(tone, tones["neutral"])
+        return tk.Label(parent, text=(icon + " " + text).strip(), bg=bg, fg=fg,
+                        font=self._font("caption_str"), bd=0,
+                        padx=self._sp(1) + self._px(2), pady=self._px(2))
+
+    def _section(self, parent, title, action=None, action_cmd=None,
+                 track=True, pad_top=3):
+        """One header for every tab (replaces the four different insets at
+        1608 / 2081 / 2763 / 3250). Tk has no letter-spacing, so tracking is
+        faked with U+2009 THIN SPACE between characters — the only way to get
+        the wide-caps look, and it only reads well on SHORT upper-case labels."""
+        T = self.T
+        bar = tk.Frame(parent, bg=T["bg"])
+        bar.pack(fill="x", padx=self._sp(2), pady=(self._sp(pad_top), self._sp(1)))
+        label = title.upper()
+        if track: label = " ".join(label)   # U+2009 THIN SPACE
+        tk.Label(bar, text=label, bg=T["bg"], fg=T["muted"],
+                 font=self._font("caption_str"), anchor="w").pack(side="left")
+        if action and action_cmd:
+            self._btn(bar, action, action_cmd, kind="accent",
+                      role="caption_str", padx=2, pady=3).pack(side="right")
+        return bar
+
+    def _meter(self, parent, pct, height=6, color=None, track=None):
+        """One meter to replace the four hand-rolled ones (1618 / 1694 / 3277 /
+        4930). Redraws on resize; call `.set(pct)` to update in place instead of
+        rebuilding the widget."""
+        T = self.T
+        color = color or T["accent"]
+        track = track or T["surface_2"]
+        h = self._px(height)
+        c = tk.Canvas(parent, bg=T["bg"], bd=0, highlightthickness=0,
+                      height=h, takefocus=0)
+        c._pct = max(0.0, min(1.0, float(pct)))
+        r = h / 2.0
+        def draw(_e=None):
+            w = c.winfo_width()
+            if w < 4: return
+            c.delete("all")
+            c.create_polygon(*round_rect_pts(0, 0, w, h, r),
+                             fill=track, outline=track, smooth=True)
+            fw = w * c._pct
+            if fw >= 2:
+                c.create_polygon(*round_rect_pts(0, 0, max(fw, h), h, r),
+                                 fill=color, outline=color, smooth=True)
+        c.bind("<Configure>", draw, add="+")
+        def _set(p):
+            c._pct = max(0.0, min(1.0, float(p))); draw()
+        c.set = _set
+        return c
+
+    def _empty(self, parent, glyph, headline, sub="", cta=None, cta_cmd=None):
+        """Icon + headline + muted subline + a REAL button wired to the same
+        command as the toolbar control the old text merely pointed at."""
+        T = self.T
+        box = tk.Frame(parent, bg=T["bg"])
+        box.pack(fill="x", pady=self._sp(6))
+        tk.Label(box, text=glyph, bg=T["bg"], fg=T["hairline_strong"],
+                 font=self._font("hero")).pack()
+        tk.Label(box, text=headline, bg=T["bg"], fg=T["text"],
+                 font=self._font("body_str")).pack(pady=(self._sp(2), 0))
+        if sub:
+            tk.Label(box, text=sub, bg=T["bg"], fg=T["muted"],
+                     font=self._font("caption"), justify="center").pack()
+        if cta and cta_cmd:
+            self._btn(box, cta, cta_cmd, kind="primary").pack(pady=(self._sp(3), 0))
+        return box
+
+    # ── tab strip ────────────────────────────────────────────────────────────
+    def _mktab(self, parent, text, cmd, compact=False):
+        """REPLACES the old _mktab. Returns the HOLDER frame — the pack /
+        pack_forget calls in _refresh_tabs keep working on it unchanged; only
+        the two `tab.configure(bg=..., fg=...)` lines become _paint_tab().
+
+        BEFORE  selection = one bg swap, same fg for both states. Measured
+                1.04 on `light`, under 1.31 on nine themes: on a third of the
+                palette you cannot see which tab you are on.
+        AFTER   inactive = muted label on tab_bg; active = full-strength label
+                on `surface` with a 2-px `accent_ind` underline, guaranteed
+                >= 3.08 contrast against tab_bg on every one of the 27 themes.
+                Hover now lifts the label (Tk's activebackground never did).
+        """
+        T = self.T
+        holder = tk.Frame(parent, bg=T["tab_bg"])
+        # C8: identical to the values _refresh_tabs re-packs the flipped
+        # archive/priorities tab with, so all tabs stay on the same offset.
+        holder.pack(side="left", padx=(6, 0), pady=4)
+        b = tk.Button(holder, text=text, command=cmd,
+                      bg=T["tab_bg"], fg=T["muted"], relief="flat", bd=0,
+                      highlightthickness=0, cursor="hand2",
+                      padx=self._sp(2) if compact else self._sp(3),
+                      pady=self._px(5), font=self._font("caption_str"),
+                      activebackground=T["tab_hover"], activeforeground=T["text"])
+        b.pack(fill="x")
+        ind = tk.Frame(holder, bg=T["tab_bg"], height=self._px(2))
+        ind.pack(fill="x", pady=(self._px(3), 0))
+        holder.btn, holder.ind, holder.compact = b, ind, compact
+        b._active = False
+        b.bind("<Enter>", lambda e: None if b._active else
+               b.configure(fg=self.T["text"], bg=self.T["tab_hover"]), add="+")
+        b.bind("<Leave>", lambda e: None if b._active else
+               b.configure(fg=self.T["muted"], bg=self.T["tab_bg"]), add="+")
+        return holder
+
+    def _paint_tab(self, tab, active):
+        T = self.T
+        b, ind = tab.btn, tab.ind
+        b._active = active
+        tab.configure(bg=T["tab_bg"])
+        b.configure(bg=T["surface"] if active else T["tab_bg"],
+                    fg=T["text"] if active else T["muted"],
+                    activebackground=T["surface"] if active else T["tab_hover"],
+                    font=self._font("caption_str"))
+        ind.configure(bg=T["accent_ind"] if active else T["tab_bg"])
+
+    # ── task row shell ───────────────────────────────────────────────────────
+    def _task_shell(self, parent, priority="none", done=False):
+        """Drop-in replacement for the first 8 lines of _task_row (3504-3512).
+
+        BEFORE  wrapper = tk.Frame(bg=item_bg) packed on bg — measured contrast
+                1.02-1.11, i.e. no visible card at all; a 5-px priority bar
+                .place()d on top of it, kept in sync by a per-row <Configure>
+                handler with two magic pads, plus row.pack_configure(padx=(9,4))
+                to stop the bar covering the checkbox.
+        AFTER   a hairline card (2 frames, 1.31 edge contrast on every theme)
+                whose priority rail is a PACKED column: it fills to the row
+                height for free and can never overlap the checkbox, so
+                `_update_bar`, `wrapper.bind("<Configure>", _update_bar)` and the
+                padx fudge are all deleted — one closure and one binding fewer
+                per row, on exactly the render path the user complains about.
+                Hover is one _interactive() call instead of the paint() closure.
+
+        Returns (outer, body, content). Pack the old `row` / `tw` into `content`.
+        """
+        T = self.T
+        outer, body = self._card(parent, rounded=False, hover=True)
+        outer.pack(fill="x", pady=self._px(2))
+        rail = T.get(priority, T["hairline"]) if priority != "none" else T["hairline"]
+        bar = tk.Frame(body, width=self._px(3), bg=rail)
+        bar.pack(side="left", fill="y")
+        content = tk.Frame(body, bg=T["surface"])
+        content.pack(side="left", fill="both", expand=True)
+        outer._pri_bar = bar          # _cycle_priority: outer._pri_bar.configure(bg=...)
+        return outer, body, content
 
     # ── debounced work (coalesce bursts into one job) ─────────────────────────
     def _save_cfg_debounced(self, delay=500):
