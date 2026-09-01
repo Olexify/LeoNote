@@ -17,3 +17,13 @@ __pycache__/
 
 # windows shortcuts
 *.lnk
+
+# Local design scratch: generated icon experiments, mockups, settings dumps.
+# The real icons (icon.png / icon1.png / icon.ico / icon1.ico) are already
+# tracked, and .gitignore does not affect files git already tracks.
+*.png
+*.jpg
+*.jpeg
+icon1?*.ico
+icon*gaw*.ico
+Settings_LeoNote_exported.json
