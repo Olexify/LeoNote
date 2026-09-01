@@ -42,6 +42,8 @@ Built for the **"let me jot this down real quick"** moments.
 - 🪨 **Local-first**: saves config + tasks as JSON in your home folder
 - 📅 **Habits** daily tracker with one-click check-ins and streaks
 - 📄 **Docs** local text snippets for reusable templates (speeches, emails, prompts)
+- 🔁 **Recurring tasks & reminders** - daily / weekly (pick weekdays) / monthly /
+  one-off. Closed the app for a week? You get **one** task, not seven.
 - 🎮 **Earn XP** and level up by completing tasks and habits checkins!
 <!-- 
 ---
@@ -57,8 +59,13 @@ No cloud. No accounts. Your vault stays yours.
 
 ## 🚀 How to run
 
-### Option 1: Run the included `.exe`
-Download and launch the executable - no install needed.
+### Option 1: Run the built app
+Grab the whole `LeoNote` folder and run `LeoNote.exe` inside it - no install needed.
+
+> The build is **onedir**: the `.exe` lives next to its DLLs and data. Keep the
+> folder together (zip it to move it) - the `.exe` on its own will not run.
+> This is deliberate: the old single-file build re-extracted ~20 MB to a temp
+> folder on *every* launch, which roughly doubled startup time.
 
 ### Option 2: Run from source
 ```bash
@@ -74,12 +81,12 @@ python sticky_notes.py
 
 This repo includes both the source and build setup.
 
-To build the `.exe`, run the included batch script:
+To build the `.exe`:
 ```bat
-build.bat
+pyinstaller --clean --noconfirm build.spec
 ```
-
-(If your script has a different name - replace it here.)
+Output: `dist\LeoNote\LeoNote.exe` (ship the whole `dist\LeoNote` folder).
+See [BUILD_INSTRUCTIONS.md](BUILD_INSTRUCTIONS.md) for details.
 
 ---
 
@@ -94,6 +101,7 @@ build.bat
 | Reorder | Drag the grip handle |
 | Zoom UI | `Ctrl + Scroll` |
 | Trash / recover | 🗑️ (within ~24h) |
+| Add a recurring task | **Habits** tab → **+ Recurring** |
 
 ---
 
@@ -101,6 +109,7 @@ build.bat
 
 - Tiny sticky task window that stays out of your way  
 - Tasks, subtasks, priorities, archive & recoverable trash  
+- Recurring tasks & reminders that don't pile up while you're away  
 - Optional Obsidian sync (Markdown note)  
 - Fully local storage (JSON)  
 - Open source + prebuilt `.exe` + build via `.bat`
