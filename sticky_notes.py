@@ -1267,7 +1267,7 @@ class App:
             insertbackground=self.T["entry_fg"],relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),11),
             bd=0,highlightthickness=1,
-            highlightbackground=self.T["separator"],highlightcolor=self.T["check_done"])
+            highlightbackground=self.T["separator"],highlightcolor=self.T["focus"])
         self.entry.pack(side="left",fill="x",expand=True,ipady=6,padx=(0,4))
         self.entry.bind("<Return>", self._add_task)
         self.entry.bind("<Control-MouseWheel>", self._ctrl_scroll)
@@ -1284,7 +1284,7 @@ class App:
             insertbackground=self.T["entry_fg"],relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),11),
             bd=0,highlightthickness=1,
-            highlightbackground=self.T["separator"],highlightcolor=self.T["check_done"])
+            highlightbackground=self.T["separator"],highlightcolor=self.T["focus"])
         self.search_entry.pack(side="left",fill="x",expand=True,ipady=6,padx=(0,4))
         self.search_entry.bind("<KeyRelease>", lambda e: self._render_tasks_debounced(160))
         tk.Button(self.search_area,text="Clear",
@@ -1396,7 +1396,7 @@ class App:
                     elif kind=="section":  w.configure(bg=self.T["header_bg"],fg=self.T["text"])
                     elif kind=="label":    w.configure(bg=self.T["bg"],fg=self.T["text"])
                     elif kind=="muted":    w.configure(bg=self.T["bg"],fg=self.T["muted"])
-                    elif kind=="entry":    w.configure(bg=self.T["entry_bg"],fg=self.T["entry_fg"],insertbackground=self.T["entry_fg"],highlightbackground=self.T["separator"],highlightcolor=self.T["check_done"])
+                    elif kind=="entry":    w.configure(bg=self.T["entry_bg"],fg=self.T["entry_fg"],insertbackground=self.T["entry_fg"],highlightbackground=self.T["separator"],highlightcolor=self.T["focus"])
                     elif kind=="button":   w.configure(bg=self.T["btn_bg"],fg=self.T["btn_fg"],activebackground=self.T["btn_hover"])
                     elif kind=="check":    w.configure(bg=self.T["bg"],fg=self.T["text"],activebackground=self.T["bg"],selectcolor=self.T["entry_bg"])
                     elif kind=="radio":    w.configure(bg=self.T["bg"],fg=self.T["text"],activebackground=self.T["bg"],selectcolor=self.T["entry_bg"])
@@ -1738,7 +1738,7 @@ class App:
         q_ent = tk.Entry(fbar, textvariable=q_var, bg=T["entry_bg"], fg=T["entry_fg"],
             insertbackground=T["entry_fg"], relief="flat",
             font=fn, width=14, bd=0, highlightthickness=1,
-            highlightbackground=T["separator"], highlightcolor=T["check_done"])
+            highlightbackground=T["separator"], highlightcolor=T["focus"])
         q_ent.pack(side="left", padx=(0,6), ipady=3)
         tk.Label(fbar, text="🔍", bg=T["header_bg"], fg=T["muted"], font=fn).pack(side="left", padx=(0,2))
 
@@ -1882,16 +1882,16 @@ class App:
                 self._trash_doc_row(doc, T)
 
     def _trash_habit_row(self, habit, T):
-        row = tk.Frame(self.task_frame,bg=T["item_bg"],pady=4,padx=6); row.pack(fill="x",pady=2)
-        tw = tk.Frame(row,bg=T["item_bg"]); tw.pack(side="left",fill="x",expand=True)
-        tk.Label(tw,text=f"🌱 {habit.get('name','Habit')}",bg=T["item_bg"],fg=T["text"],
+        row = tk.Frame(self.task_frame,bg=T["surface"],pady=4,padx=6); row.pack(fill="x",pady=2)
+        tw = tk.Frame(row,bg=T["surface"]); tw.pack(side="left",fill="x",expand=True)
+        tk.Label(tw,text=f"🌱 {habit.get('name','Habit')}",bg=T["surface"],fg=T["text"],
             font=(self.cfg.get("ui_font","Segoe UI Variable"),10,"bold"),anchor="w").pack(anchor="w")
         deleted_at = habit.get("deleted_at","")
         if deleted_at:
             remain = max(0,int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(deleted_at))).total_seconds()//3600))
-            tk.Label(tw,text=f"~{remain}h left",bg=T["item_bg"],fg=T["muted"],
+            tk.Label(tw,text=f"~{remain}h left",bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),anchor="w").pack(anchor="w")
-        bf = tk.Frame(row,bg=T["item_bg"]); bf.pack(side="right")
+        bf = tk.Frame(row,bg=T["surface"]); bf.pack(side="right")
         def restore_habit(h=habit):
             data = load_habits()
             for hx in data.get("habits",[]):
@@ -1911,28 +1911,28 @@ class App:
                 b.after(2000, lambda: (setattr(b,"_confirm",False),
                     b.configure(text="🗑",fg=T["text"])) if b.winfo_exists() else None)
         tk.Button(bf,text="↺",command=restore_habit,
-            bg=T["item_bg"],fg=T["text"],relief="flat",bd=0,padx=4,
+            bg=T["surface"],fg=T["text"],relief="flat",bd=0,padx=4,
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),cursor="hand2",
-            activebackground=T["item_hover"]).pack(side="right")
+            activebackground=T["surface_hover"]).pack(side="right")
         del_hab_btn = tk.Button(bf,text="🗑",command=del_habit_confirm,
-            bg=T["item_bg"],fg=T["text"],relief="flat",bd=0,padx=4,
+            bg=T["surface"],fg=T["text"],relief="flat",bd=0,padx=4,
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),cursor="hand2",
-            activebackground=T["item_hover"])
+            activebackground=T["surface_hover"])
         del_hab_btn._confirm=False; _del_hab_ref[0]=del_hab_btn
         del_hab_btn.pack(side="right")
 
 
     def _trash_doc_row(self, doc, T):
-        row = tk.Frame(self.task_frame,bg=T["item_bg"],pady=4,padx=6); row.pack(fill="x",pady=2)
-        tw  = tk.Frame(row,bg=T["item_bg"]); tw.pack(side="left",fill="x",expand=True)
-        tk.Label(tw,text=doc.get("title","Untitled"),bg=T["item_bg"],fg=T["text"],
+        row = tk.Frame(self.task_frame,bg=T["surface"],pady=4,padx=6); row.pack(fill="x",pady=2)
+        tw  = tk.Frame(row,bg=T["surface"]); tw.pack(side="left",fill="x",expand=True)
+        tk.Label(tw,text=doc.get("title","Untitled"),bg=T["surface"],fg=T["text"],
             font=(self.cfg.get("ui_font","Segoe UI Variable"),10,"bold"),anchor="w").pack(anchor="w")
         deleted_at = doc.get("deleted_at","")
         if deleted_at:
             remain = max(0,int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(deleted_at))).total_seconds()//3600))
-            tk.Label(tw,text=f"~{remain}h left",bg=T["item_bg"],fg=T["muted"],
+            tk.Label(tw,text=f"~{remain}h left",bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),anchor="w").pack(anchor="w")
-        bf = tk.Frame(row,bg=T["item_bg"]); bf.pack(side="right")
+        bf = tk.Frame(row,bg=T["surface"]); bf.pack(side="right")
         def restore_doc(d=doc):
             all_docs=load_docs()
             restored = None
@@ -1955,13 +1955,13 @@ class App:
                 b.after(2000, lambda: (setattr(b,"_confirm",False),
                     b.configure(text="🗑",fg=T["text"])) if b.winfo_exists() else None)
         tk.Button(bf,text="↺",command=restore_doc,
-            bg=T["item_bg"],fg=T["text"],relief="flat",bd=0,padx=4,
+            bg=T["surface"],fg=T["text"],relief="flat",bd=0,padx=4,
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),cursor="hand2",
-            activebackground=T["item_hover"]).pack(side="right")
+            activebackground=T["surface_hover"]).pack(side="right")
         del_doc_btn = tk.Button(bf,text="🗑",command=del_doc_confirm,
-            bg=T["item_bg"],fg=T["text"],relief="flat",bd=0,padx=4,
+            bg=T["surface"],fg=T["text"],relief="flat",bd=0,padx=4,
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),cursor="hand2",
-            activebackground=T["item_hover"])
+            activebackground=T["surface_hover"])
         del_doc_btn._confirm=False; _del_doc_ref[0]=del_doc_btn
         del_doc_btn.pack(side="right")
 
@@ -2113,7 +2113,7 @@ class App:
                     elif is_today:
                         bg, fg = "#22a34a", "#ffffff"
                     else:
-                        bg, fg = T["item_bg"], T["text"]
+                        bg, fg = T["surface"], T["text"]
                     def _click(date=d):
                         selected[0] = date
                         _do_select(date)
@@ -2363,11 +2363,11 @@ class App:
         ]
         gf = tk.Frame(f,bg=T["bg"]); gf.pack(fill="x")
         for i,(label,val) in enumerate(stats):
-            cf = tk.Frame(gf,bg=T["item_bg"]); cf.grid(row=i//2, column=i%2, padx=4, pady=4, sticky="ew")
+            cf = tk.Frame(gf,bg=T["surface"]); cf.grid(row=i//2, column=i%2, padx=4, pady=4, sticky="ew")
             gf.grid_columnconfigure(0,weight=1); gf.grid_columnconfigure(1,weight=1)
-            tk.Label(cf,text=str(val),bg=T["item_bg"],fg=T["check_done"],
+            tk.Label(cf,text=str(val),bg=T["surface"],fg=T["check_done"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),16,"bold"),pady=4).pack()
-            tk.Label(cf,text=label,bg=T["item_bg"],fg=T["muted"],
+            tk.Label(cf,text=label,bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8)).pack(pady=(0,4))
         # motivational message
         msgs = ["Keep it up! 🚀","You are on a roll! 🔥","Great progress! ✨","Unstoppable! 💪"]
@@ -2469,7 +2469,7 @@ class App:
 
         # color bands
         _HMAP_BANDS = [
-            (0,         T["item_bg"]),
+            (0,         T["surface"]),
             (1,         "#e05c5c"),
             (1800,      "#f4a623"),
             (3600,      "#ffe100"),
@@ -2481,7 +2481,7 @@ class App:
             for threshold, color in reversed(_HMAP_BANDS):
                 if secs >= threshold:
                     return color
-            return T["item_bg"]
+            return T["surface"]
 
         # title row with expand button
         _hmap_days = [60]
@@ -2494,7 +2494,7 @@ class App:
 
         # legend
         leg_f = tk.Frame(f, bg=T["bg"]); leg_f.pack(anchor="w", pady=(0,4))
-        for txt, col in [("None",T["item_bg"]),("<30m","#e05c5c"),("<1h","#f4a623"),
+        for txt, col in [("None",T["surface"]),("<30m","#e05c5c"),("<1h","#f4a623"),
                          ("<2h","#ffe100"),("<4h","#4caf88"),("<6h","#29b6d8"),("6h+","#a855f7")]:
             li = tk.Frame(leg_f, bg=T["bg"]); li.pack(side="left", padx=(0,6))
             tk.Frame(li, bg=col, width=10, height=10).pack(side="left", padx=(0,2))
@@ -2628,14 +2628,14 @@ class App:
                         dd2 = all_days_data[dk]
                         ws = dd2.get("work",0); bs = dd2.get("break",0)
                         if ws==0 and bs==0: continue
-                        row = tk.Frame(new_inner, bg=T["item_bg"], pady=3, padx=8)
+                        row = tk.Frame(new_inner, bg=T["surface"], pady=3, padx=8)
                         row.pack(fill="x", pady=1)
-                        tk.Label(row, text=dk, bg=T["item_bg"], fg=T["text"],
+                        tk.Label(row, text=dk, bg=T["surface"], fg=T["text"],
                             font=fn_d, width=12, anchor="w").pack(side="left")
                         tk.Label(row, text=f"💼 {ws//3600}h {(ws%3600)//60:02d}m",
-                            bg=T["item_bg"], fg=wc, font=fn_d).pack(side="left", padx=(8,4))
+                            bg=T["surface"], fg=wc, font=fn_d).pack(side="left", padx=(8,4))
                         tk.Label(row, text=f"☕ {bs//3600}h {(bs%3600)//60:02d}m",
-                            bg=T["item_bg"], fg=bc, font=fn_d).pack(side="left", padx=4)
+                            bg=T["surface"], fg=bc, font=fn_d).pack(side="left", padx=4)
                 else:
                     # squares view - sorted oldest first for visual grid
                     sq_days = sorted(all_days_data.keys())
@@ -2687,13 +2687,13 @@ class App:
             bg=T["bg"], fg=T["muted"], relief="flat", bd=0,
             font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
             padx=4, pady=1, cursor="hand2",
-            activebackground=T["item_hover"]).pack(side="right", padx=(0,6))
+            activebackground=T["surface_hover"]).pack(side="right", padx=(0,6))
 
         exp_btn = tk.Button(exp_row, text="⊞ 365d", command=_toggle_expand,
             bg=T["bg"], fg=T["muted"], relief="flat", bd=0,
             font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
             padx=4, pady=1, cursor="hand2",
-            activebackground=T["item_hover"])
+            activebackground=T["surface_hover"])
         exp_btn.pack(side="right")
 
 
@@ -2790,7 +2790,7 @@ class App:
         # (void/lava/aurora/neon) and omitted eclipse + violet-night, where the
         # medal cards rendered at 1.08 contrast - literally unreadable.
         pool = self._MEDAL_DARK if self.T["is_dark"] else self._MEDAL_COLORS
-        return pool.get(rank, {"bg":self.T["item_bg"],"bar":self.T["separator"],
+        return pool.get(rank, {"bg":self.T["surface"],"bar":self.T["separator"],
                                 "badge":self.T["muted"],"label":f"#{rank+1}","ring":self.T["separator"]})
 
     def _render_priorities(self, T):
@@ -2827,7 +2827,7 @@ class App:
             style.map("Pri.TCombobox",
                 fieldbackground=[("readonly", T["entry_bg"])],
                 foreground=[("readonly", T["entry_fg"])],
-                background=[("readonly", T["entry_bg"]), ("active", T["item_hover"])],
+                background=[("readonly", T["entry_bg"]), ("active", T["surface_hover"])],
                 arrowcolor=[("readonly", T["text"])])
         except Exception: pass
         # dropdown listbox (popdown) colors — not covered by ttk style, needs option db
@@ -2866,7 +2866,7 @@ class App:
     # ── shared helper: one card row ──────────────────────────────────────────
     def _pri_card_row(self, items, item, rank, T, fn, parent=None, compact=False):
         med     = self._pri_medal(rank)
-        ibg     = med["bg"] if rank < 3 else T["item_bg"]
+        ibg     = med["bg"] if rank < 3 else T["surface"]
         bar_col = med["bar"] if rank < 3 else T["separator"]
         host    = parent if parent else self.task_frame
 
@@ -2913,7 +2913,7 @@ class App:
                 b.after(2000, lambda: (setattr(b,"_confirm",False),
                     b.configure(text="✕", fg=T["muted"])) if b.winfo_exists() else None)
         del_b = tk.Button(top, text="✕", bg=ibg, fg=T["muted"], relief="flat", bd=0,
-            padx=6, font=(fn,8), cursor="hand2", activebackground=T["item_hover"])
+            padx=6, font=(fn,8), cursor="hand2", activebackground=T["surface_hover"])
         del_b._confirm = False
         del_b.configure(command=lambda br=[del_b], it=item, its=items: _del_pri(it, its, br))
         del_b.pack(side="right")
@@ -2967,7 +2967,7 @@ class App:
         for i, item in enumerate(items):
             r, c = divmod(i, COLS)
             med    = self._pri_medal(i)
-            ibg    = med["bg"] if i < 3 else T["item_bg"]
+            ibg    = med["bg"] if i < 3 else T["surface"]
             bar_col= med["bar"] if i < 3 else T["separator"]
             badge_text = med["label"] if i < 3 else f"#{i+1}"
             badge_fg   = med["badge"] if i < 3 else T["muted"]
@@ -3037,7 +3037,7 @@ class App:
                     b._confirm=True; b.configure(text="✕?",fg=T["close_hover"])
                     b.after(1500,lambda:(setattr(b,"_confirm",False),b.configure(text="✕",fg=T["muted"])) if b.winfo_exists() else None)
             del_b=tk.Button(top,text="✕",bg=ibg,fg=T["muted"],relief="flat",bd=0,
-                padx=4,font=(fn,7),cursor="hand2",activebackground=T["item_hover"])
+                padx=4,font=(fn,7),cursor="hand2",activebackground=T["surface_hover"])
             del_b._confirm=False
             del_b.configure(command=lambda br=[del_b],it=item,its=items:_del(it,its,br))
             del_b.pack(side="right")
@@ -3049,7 +3049,7 @@ class App:
         # #1 full width, #2+#3 side by side, rest as compact list
         def _mini_cube(parent, item, rank, col_weight=1):
             med    = self._pri_medal(rank)
-            ibg    = med["bg"] if rank < 3 else T["item_bg"]
+            ibg    = med["bg"] if rank < 3 else T["surface"]
             bar_col= med["bar"] if rank < 3 else T["separator"]
             badge_text = med["label"] if rank < 3 else f"#{rank+1}"
             badge_fg   = med["badge"] if rank < 3 else T["muted"]
@@ -3111,7 +3111,7 @@ class App:
         item = items[idx]
         rank = idx
         med  = self._pri_medal(rank)
-        ibg  = med["bg"] if rank < 3 else T["item_bg"]
+        ibg  = med["bg"] if rank < 3 else T["surface"]
         bar_col = med["bar"] if rank < 3 else T["separator"]
 
         # nav bar
@@ -3606,7 +3606,7 @@ class App:
                 tk.Button(df,text="✕",command=_del_cat,
                     bg=T["bg"],fg=T["muted"],relief="flat",bd=0,
                     font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
-                    cursor="hand2",activebackground=T["item_hover"]).pack(side="right")
+                    cursor="hand2",activebackground=T["surface_hover"]).pack(side="right")
 
             # close on click-outside
             def _close_pop(e=None):
@@ -3623,7 +3623,7 @@ class App:
         se = tk.Entry(sb,textvariable=doc_search_var,bg=T["entry_bg"],fg=T["entry_fg"],
             insertbackground=T["entry_fg"],relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
-            highlightthickness=1,highlightbackground=T["separator"],highlightcolor=T["check_done"])
+            highlightthickness=1,highlightbackground=T["separator"],highlightcolor=T["focus"])
         se.pack(side="left",fill="x",expand=True,ipady=4)
         ph_shown = [True]
         def _show_ph():
@@ -3682,7 +3682,7 @@ class App:
         for i,doc in enumerate(docs):
             r,c = divmod(i,cols)
             CARD_H  = 280
-            cell = tk.Frame(self._doc_grid_host,bg=T["item_bg"],
+            cell = tk.Frame(self._doc_grid_host,bg=T["surface"],
                 width=cell_w,height=CARD_H); cell.grid(row=r,column=c,padx=2,pady=2,sticky="nsew")
             cell.grid_propagate(False)
             self._doc_grid_host.grid_columnconfigure(c,weight=1)
@@ -3697,17 +3697,17 @@ class App:
             max_body_chars = chars_per_line * 20
             preview_raw = body_txt[:max_body_chars]+("…" if len(body_txt)>max_body_chars else "")
             cat_tag = doc.get("category","Default") or "Default"
-            tl = tk.Label(cell,text=title_txt,bg=T["item_bg"],fg=T["text"],
+            tl = tk.Label(cell,text=title_txt,bg=T["surface"],fg=T["text"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold"),
                 anchor="nw",wraplength=max(40, cell_w-20),justify="left",padx=4,pady=3)
             tl.grid(row=0,column=0,sticky="ew",padx=0,pady=0)
-            cl = tk.Label(cell,text=f"📂 {cat_tag}",bg=T["item_bg"],fg=T["archive"],
+            cl = tk.Label(cell,text=f"📂 {cat_tag}",bg=T["surface"],fg=T["archive"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
                 anchor="nw",padx=4,pady=0)
             cl.grid(row=1,column=0,sticky="ew",padx=0,pady=0)
             cell.rowconfigure(1,weight=0)
             cell.rowconfigure(2,weight=1)
-            pl = tk.Label(cell,text=preview_raw,bg=T["item_bg"],fg=T["muted"],
+            pl = tk.Label(cell,text=preview_raw,bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
                 anchor="nw",wraplength=cell_w-8,justify="left",padx=4,pady=1)
             pl.grid(row=2,column=0,sticky="nsew",padx=0,pady=(0,16))
@@ -3719,7 +3719,7 @@ class App:
                 save_docs(all_docs)
                 self._delete_doc_backup(d)
                 self._render_tasks()
-            del_btn = tk.Label(cell,text="✕",bg=T["item_bg"],fg=T["muted"],
+            del_btn = tk.Label(cell,text="✕",bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),7),cursor="hand2",padx=2)
             del_btn.place(x=cell_w-16,y=3)
             del_btn.bind("<Button-1>", lambda e,fn=trash_doc: fn())
@@ -3728,11 +3728,11 @@ class App:
             for w in (cell,pl,cl):
                 w.bind("<Double-Button-1>", lambda e,d=doc: self._open_doc(d))
             def _enter(e, ww=(cell,tl,pl,cl,del_btn)):
-                for w in ww[:4]: w.configure(bg=T["item_hover"])
-                ww[4].configure(bg=T["item_hover"], fg=T["text"])
+                for w in ww[:4]: w.configure(bg=T["surface_hover"])
+                ww[4].configure(bg=T["surface_hover"], fg=T["text"])
             def _leave(e, ww=(cell,tl,pl,cl,del_btn)):
-                for w in ww[:4]: w.configure(bg=T["item_bg"])
-                ww[4].configure(bg=T["item_bg"], fg=T["muted"])
+                for w in ww[:4]: w.configure(bg=T["surface"])
+                ww[4].configure(bg=T["surface"], fg=T["muted"])
             for w in (cell,tl,pl,cl):
                 w.bind("<Enter>",_enter); w.bind("<Leave>",_leave)
             # Invisible drag zone — whole card is draggable, cursor shows it
@@ -3993,10 +3993,10 @@ class App:
         done_today_count = len(log.get(today,[]))
         total_h = len(habits)
         pct_today = done_today_count/total_h if total_h else 0
-        summary = tk.Frame(self.task_frame,bg=T["item_bg"],pady=6,padx=10)
+        summary = tk.Frame(self.task_frame,bg=T["surface"],pady=6,padx=10)
         summary.pack(fill="x",pady=(0,6))
         tk.Label(summary,text=f"Today: {done_today_count}/{total_h} done",
-            bg=T["item_bg"],fg=T["text"],
+            bg=T["surface"],fg=T["text"],
             font=(self.cfg.get("ui_font","Segoe UI Variable"),9,"bold")).pack(anchor="w")
         bar_bg = tk.Frame(summary,bg=T["separator"],height=5); bar_bg.pack(fill="x",pady=(3,0))
         _bar_drawn = [False]
@@ -4019,28 +4019,30 @@ class App:
             last_7       = _habit_last_n(hid,log,7)
             last_30      = _habit_last_n(hid,log,30)
 
-            card = tk.Frame(self.task_frame,bg=T["item_bg"],pady=5,padx=8)
+            card = tk.Frame(self.task_frame,bg=T["surface"],pady=5,padx=8,
+                highlightthickness=1,highlightbackground=T["hairline"],
+                highlightcolor=T["hairline"])
             card._habit_idx = _h_idx
             card.pack(fill="x",pady=2)
 
             # top row: drag-handle, flame+streak, name, done-btn, delete-btn
-            top = tk.Frame(card,bg=T["item_bg"]); top.pack(fill="x")
+            top = tk.Frame(card,bg=T["surface"]); top.pack(fill="x")
 
             # tiny ⋮⋮ drag handle
             _hi = _h_idx
-            drag_h = tk.Label(top, text="⋮⋮", bg=T["item_bg"], fg=T["muted"],
+            drag_h = tk.Label(top, text="⋮⋮", bg=T["surface"], fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"), 8),
                 cursor="fleur", padx=2, pady=0)
             drag_h.pack(side="left", padx=(0,2))
             drag_h.bind("<ButtonPress-1>", lambda e,i=_hi,hl=habits,d=data: self._habit_drag_start(e,i,hl,d))
 
             flame = "🔥" if streak>0 else "○"
-            tk.Label(top,text=f"{flame} {streak}d",bg=T["item_bg"],
+            tk.Label(top,text=f"{flame} {streak}d",bg=T["surface"],
                 fg=T["check_done"] if streak>0 else T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10,"bold"),width=6).pack(side="left")
 
-            tw = tk.Frame(top,bg=T["item_bg"]); tw.pack(side="left",fill="x",expand=True)
-            name_lbl = tk.Label(tw,text=h.get("name","Habit"),bg=T["item_bg"],fg=T["text"],
+            tw = tk.Frame(top,bg=T["surface"]); tw.pack(side="left",fill="x",expand=True)
+            name_lbl = tk.Label(tw,text=h.get("name","Habit"),bg=T["surface"],fg=T["text"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10),anchor="w")
             name_lbl.pack(anchor="w",fill="x",expand=True)
             name_lbl.bind("<Double-Button-1>",
@@ -4061,9 +4063,9 @@ class App:
                     b.configure(text="Sure?",fg=T["close_hover"])
                     b.after(2000, lambda: (setattr(b,"_confirm",False),
                         b.configure(text="✕",fg=T["muted"])) if b.winfo_exists() else None)
-            del_b = tk.Button(top,text="✕",bg=T["item_bg"],fg=T["muted"],relief="flat",bd=0,padx=4,
+            del_b = tk.Button(top,text="✕",bg=T["surface"],fg=T["muted"],relief="flat",bd=0,padx=4,
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),cursor="hand2",
-                activebackground=T["item_hover"])
+                activebackground=T["surface_hover"])
             del_b._confirm = False
             del_b.configure(command=lambda br=[del_b],hid=hid,data=data: del_habit(br,hid,data))
             del_b.pack(side="right")
@@ -4091,8 +4093,8 @@ class App:
                 padx=8,pady=3,cursor="hand2",activebackground=T["btn_hover"]).pack(side="right",padx=(0,6))
 
             # 7-day mini heatmap row
-            dot_row = tk.Frame(card,bg=T["item_bg"]); dot_row.pack(fill="x",pady=(2,0))
-            tk.Label(dot_row,text="7d: ",bg=T["item_bg"],fg=T["muted"],
+            dot_row = tk.Frame(card,bg=T["surface"]); dot_row.pack(fill="x",pady=(2,0))
+            tk.Label(dot_row,text="7d: ",bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8)).pack(side="left")
             for di,done_dot in enumerate(
                     [_habit_done_on(hid,log,6-j) for j in range(7)]):
@@ -4100,7 +4102,7 @@ class App:
                 tk.Frame(dot_row,bg=col_dot,width=10,height=10).pack(side="left",padx=1,pady=1)
 
             # stats disclosure row
-            stats_frame = tk.Frame(card,bg=T["item_bg"]); # packed when expanded
+            stats_frame = tk.Frame(card,bg=T["surface"]); # packed when expanded
 
             def _toggle_stats(sf=stats_frame, hid=hid, best=best,
                                total=total_h_days, l7=last_7, l30=last_30,
@@ -4173,7 +4175,7 @@ class App:
                         width=12,height=12).pack(side="left",padx=1)
 
             # small "▸ Stats" toggle label
-            stl = tk.Label(card,text="▸ Stats",bg=T["item_bg"],fg=T["muted"],
+            stl = tk.Label(card,text="▸ Stats",bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),8),cursor="hand2")
             stl.pack(anchor="w",pady=(2,0))
             def _toggle_wrap(sf=stats_frame,l=stl,fn=_toggle_stats):
@@ -4226,43 +4228,48 @@ class App:
     # ── task row ──────────────────────────────────────────────────────────────
     def _task_row(self, task, archived=False, trashed=False, searching=False, scheduled=False):
         T = self.T
-        wrapper = tk.Frame(self.task_frame, bg=T["item_bg"]); wrapper.pack(fill="x", pady=2)
-        row = tk.Frame(wrapper, bg=T["item_bg"], pady=3, padx=4); row.pack(fill="x")
-        row._task_ref = task; wrapper._task_ref = task
+        # Hairline card (1.31 edge contrast on every theme) with a PACKED
+        # priority rail. Was a flat item_bg frame on bg at 1.01-1.11 contrast -
+        # i.e. no visible card at all - plus a .place()d bar kept in sync by a
+        # per-row <Configure> closure. Both are gone.
+        outer, body, content = self._task_shell(
+            self.task_frame, task.get("priority", "none"), task.get("done", False))
+        wrapper = body                      # what paint() tints; NOT the border
+        row = tk.Frame(content, bg=T["surface"], pady=3, padx=4); row.pack(fill="x")
+        row._task_ref = task; outer._task_ref = task
         action_buttons = []
 
         def paint(bg):
+            hot = (bg == T["surface_hover"])
             for w in _paint_widgets:
                 try: w.configure(bg=bg)
                 except Exception: pass
+            # Icons recede to the muted tone at rest and come to full strength
+            # on hover: same layout, far less noise down a long list.
+            afg = T["text"] if hot else T["disabled"]
             for b in action_buttons:
-                try: b.configure(bg=bg)
+                try: b.configure(bg=bg, fg=afg)
                 except Exception: pass
             try: btn_overlay.configure(bg=bg)
             except Exception: pass
             if drag_lbl: drag_lbl.configure(bg=bg)
 
         def _bind_hover(widget):
-            widget.bind("<Enter>", lambda e: paint(T["item_hover"]), add="+")
-            widget.bind("<Leave>", lambda e: paint(T["item_bg"]), add="+")
-        row.bind("<Enter>", lambda e: paint(T["item_hover"]))
-        row.bind("<Leave>", lambda e: paint(T["item_bg"]))
+            widget.bind("<Enter>", lambda e: paint(T["surface_hover"]), add="+")
+            widget.bind("<Leave>", lambda e: paint(T["surface"]), add="+")
+        row.bind("<Enter>", lambda e: paint(T["surface_hover"]))
+        row.bind("<Leave>", lambda e: paint(T["surface"]))
 
         pri = task.get("priority","none")
-        pri_color = T.get(pri, T["separator"]) if pri!="none" else T["separator"]
-        _pri_bar = tk.Frame(wrapper, bg=pri_color, width=5)
-        _pri_bar.place(x=0, y=4, width=5, height=10)  # real size set by _update_bar
-        # keep bar updated when wrapper resizes
-        def _update_bar(e, b=_pri_bar):
-            pad = 4
-            b.place(x=0, y=pad, width=5, height=max(4, e.height - pad*2))
-        wrapper.bind("<Configure>", _update_bar)
-        # offset row and date_row content so bar doesn't cover checkbox
-        row.pack_configure(padx=(9,4))
+        # The rail is packed by _task_shell: it fills the row height for free and
+        # cannot overlap the checkbox, so _update_bar, its <Configure> binding
+        # and the padx=(9,4) fudge are all deleted (one closure + one binding
+        # fewer per row, on the exact render path that was slow).
+        _pri_bar = outer._pri_bar
 
         drag_lbl = None
         if not archived and not trashed and not searching:
-            drag_lbl = tk.Label(row,text="⋮⋮",bg=T["item_bg"],fg=T["muted"],
+            drag_lbl = tk.Label(row,text="⋮⋮",bg=T["surface"],fg=T["muted"],
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9),cursor="fleur",width=2)
             drag_lbl.pack(side="left",padx=(0,2))
             drag_lbl.bind("<ButtonPress-1>",  lambda e,t=task: self._dt_start(t))
@@ -4270,21 +4277,24 @@ class App:
 
         is_done = task.get("done",False)
         var = tk.BooleanVar(value=is_done)
-        chk = tk.Checkbutton(row,variable=var,bg=T["item_bg"],activebackground=T["item_bg"],
-            selectcolor=T["check_done"] if is_done else T["item_bg"],
+        chk = tk.Checkbutton(row,variable=var,bg=T["surface"],activebackground=T["surface"],
+            selectcolor=T["check_done"] if is_done else T["surface"],
             relief="flat",bd=0,highlightthickness=0,
             state="disabled" if (archived or trashed or searching) else "normal",
             command=lambda v=var,t=task: self._toggle(t,v))
         chk.pack(side="left",padx=(2,4))
 
-        style = ("Segoe UI Variable",10,"overstrike") if is_done else (self.cfg.get("ui_font","Segoe UI Variable"),10)
+        # was: the done branch hardcoded "Segoe UI Variable" while the not-done
+        # branch read cfg["ui_font"], so a task changed typeface the moment you
+        # completed it. Same family both ways; only the overstrike differs.
+        style = self._font("body", over=is_done)
         fg    = T["muted"] if is_done else T["text"]
-        tw    = tk.Frame(row,bg=T["item_bg"])
+        tw    = tk.Frame(row,bg=T["surface"])
         # tw.pack() is deferred — called after action buttons claim side=right space
 
         # Feature 4: wraplength uses full available width dynamically
         def _make_lbl(tw=tw,task=task,style=style,fg=fg):
-            lbl = tk.Label(tw,text=task["text"],bg=T["item_bg"],fg=fg,
+            lbl = tk.Label(tw,text=task["text"],bg=T["surface"],fg=fg,
                 font=style,anchor="w",justify="left",wraplength=1)
             lbl.pack(anchor="w",fill="x",expand=True)
             def _update_wrap(e,l=lbl): l.configure(wraplength=max(60,e.width-54))
@@ -4331,7 +4341,7 @@ class App:
 
         if not archived and not trashed and not searching:
             # Combined row: created text (if no dates set) + start/due buttons
-            date_row = tk.Frame(wrapper, bg=T["item_bg"])
+            date_row = tk.Frame(content, bg=T["surface"])
             date_row.pack(fill="x", padx=(28,0))  # indent to align with text content
 
             if _show_created:
@@ -4343,10 +4353,10 @@ class App:
                 if trashed and task.get("deleted_at"):
                     remain = max(0, int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(task["deleted_at"]))).total_seconds()//3600))
                     meta_txt += f" · ~{remain}h left"
-                meta = tk.Label(date_row, text=meta_txt, bg=T["item_bg"], fg=meta_fg, font=fn8, anchor="w")
+                meta = tk.Label(date_row, text=meta_txt, bg=T["surface"], fg=meta_fg, font=fn8, anchor="w")
                 meta.pack(side="left", padx=(0,6))
             else:
-                meta = tk.Label(tw, text="", bg=T["item_bg"])  # invisible placeholder
+                meta = tk.Label(tw, text="", bg=T["surface"])  # invisible placeholder
         else:
             date_row = None
             if _show_created:
@@ -4359,10 +4369,10 @@ class App:
                 if trashed and task.get("deleted_at"):
                     remain = max(0, int((datetime.timedelta(hours=TRASH_HOURS)-(now_dt()-parse_iso(task["deleted_at"]))).total_seconds()//3600))
                     meta_txt += f" · ~{remain}h left"
-                meta = tk.Label(tw, text=meta_txt, bg=T["item_bg"], fg=meta_fg, font=fn8, anchor="w")
+                meta = tk.Label(tw, text=meta_txt, bg=T["surface"], fg=meta_fg, font=fn8, anchor="w")
                 meta.pack(anchor="w")
             else:
-                meta = tk.Label(tw, text="", bg=T["item_bg"])
+                meta = tk.Label(tw, text="", bg=T["surface"])
 
         if not archived and not trashed and not searching:
 
@@ -4377,23 +4387,23 @@ class App:
             dd_set = bool(task.get("due_date"))
 
             sd_btn = tk.Button(date_row, text=_sd_text(),
-                bg=T["item_bg"],
+                bg=T["surface"],
                 fg=T["check_done"] if sd_set else T["muted"],
                 relief="flat", bd=0,
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
-                padx=2, pady=0, cursor="hand2", activebackground=T["item_hover"])
+                padx=2, pady=0, cursor="hand2", activebackground=T["surface_hover"])
             sd_btn.pack(side="left", padx=(0,8))
 
             dd_btn = tk.Button(date_row, text=_dd_text(),
-                bg=T["item_bg"],
+                bg=T["surface"],
                 fg=T["archive"] if dd_set else T["muted"],
                 relief="flat", bd=0,
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),7),
-                padx=2, pady=0, cursor="hand2", activebackground=T["item_hover"])
+                padx=2, pady=0, cursor="hand2", activebackground=T["surface_hover"])
             dd_btn.pack(side="left")
 
             if pri != "none":
-                _pri_lbl_w = tk.Label(date_row, text=f"· {pri.capitalize()}", bg=T["item_bg"],
+                _pri_lbl_w = tk.Label(date_row, text=f"· {pri.capitalize()}", bg=T["surface"],
                     fg=meta_fg, font=fn8)
                 _pri_lbl_w.pack(side="left", padx=(6,0))
                 if hasattr(self, "_task_widget_registry") and id(task) in self._task_widget_registry:
@@ -4432,25 +4442,31 @@ class App:
             sd_btn.configure(command=_pick_start)
             dd_btn.configure(command=_pick_due)
 
-        _paint_widgets = [wrapper,row,tw,lbl,meta] + ([date_row] if date_row else [])
+        # `body` replaces the old wrapper; `outer` is deliberately EXCLUDED -
+        # it is the border, and tinting it would erase the card edge on hover.
+        _paint_widgets = [body,row,tw,lbl,meta] + ([date_row] if date_row else [])
         # Register task widgets for in-place updates (priority, rename, subtask add)
-        _reg = {"lbl": lbl, "pri_bar": _pri_bar, "tw": tw,
-                "date_row": date_row, "pri_lbl": None, "wrapper": wrapper}
+        # pri_bar must be the packed rail: _cycle_priority reconfigures it inside
+        # a try/except whose fallback is a FULL re-render, so getting this wrong
+        # is a silent performance regression rather than a crash.
+        _reg = {"lbl": lbl, "pri_bar": outer._pri_bar, "tw": tw,
+                "date_row": date_row, "pri_lbl": None, "wrapper": body}
         if hasattr(self, "_task_widget_registry"):
             self._task_widget_registry[id(task)] = _reg
 
         # tw fills the full row width; btn_overlay floats via place() — zero impact on layout
         tw.pack(side="left", fill="both", expand=True)
 
-        btn_overlay = tk.Frame(wrapper, bg=T["item_bg"])
+        btn_overlay = tk.Frame(content, bg=T["surface"])
         _OVERLAY_SZ = 48  # fixed square size — 2×2 grid of bigger, easy-to-click buttons
         _BIN = "x"        # small ASCII stand-in so emoji doesn't get clipped
 
         def mk_btn(txt, cmd_fn, r, c):
-            b = tk.Button(btn_overlay, text=txt, command=cmd_fn, bg=T["item_bg"], fg=T["text"],
+            b = tk.Button(btn_overlay, text=txt, command=cmd_fn, bg=T["surface"], fg=T["text"],
                 relief="flat", bd=0, padx=0, pady=0, width=2,
                 font=(self.cfg.get("ui_font","Segoe UI Variable"), 8),
-                cursor="hand2", activebackground=T["item_hover"])
+                cursor="hand2", activebackground=T["surface_hover"])
+            b.configure(fg=T["disabled"])      # resting state; paint() lifts on hover
             b.grid(row=r, column=c, sticky="nsew", padx=1, pady=1)
             action_buttons.append(b); return b
 
@@ -4484,8 +4500,9 @@ class App:
             mk_btn("⊞",  lambda t=task: self._add_subtask(t),                    1, 0)
             mk_btn("🗑",  lambda t=task: self._trash_task(t),                     1, 1)
 
-        # Place overlay anchored to top-right of wrapper (not row) so it is never clipped
-        def _place_overlay(e=None, bo=btn_overlay, w=wrapper, sz=_OVERLAY_SZ):
+        # Anchored to top-right of `content` (not the border frame, or it lands
+        # 1px off and `outer` would carry a third <Configure> handler).
+        def _place_overlay(e=None, bo=btn_overlay, w=content, sz=_OVERLAY_SZ):
             try:
                 if not bo.winfo_exists() or not w.winfo_exists(): return
                 wh = w.winfo_height()
@@ -4493,7 +4510,7 @@ class App:
                 y_off = max(0, (wh - sz) // 2)
                 bo.place(relx=1.0, x=-sz-2, y=y_off, width=sz, height=sz)
             except Exception: pass
-        wrapper.bind("<Configure>", _place_overlay, add="+")
+        content.bind("<Configure>", _place_overlay, add="+")
         btn_overlay.after(60, _place_overlay)
 
 
@@ -4644,16 +4661,16 @@ class App:
     def _inject_subtask_row(self, tw, task, st, archived=False, trashed=False, searching=False):
         """Build one subtask row widget into tw without a full re-render."""
         T = self.T
-        sf = tk.Frame(tw, bg=T["item_bg"]); sf.pack(anchor="w", fill="x")
+        sf = tk.Frame(tw, bg=T["surface"]); sf.pack(anchor="w", fill="x")
         sv = tk.BooleanVar(value=st.get("done", False))
-        sc = tk.Checkbutton(sf, variable=sv, bg=T["item_bg"], activebackground=T["item_bg"],
-            selectcolor=T["check_done"] if st.get("done") else T["item_bg"],
+        sc = tk.Checkbutton(sf, variable=sv, bg=T["surface"], activebackground=T["surface"],
+            selectcolor=T["check_done"] if st.get("done") else T["surface"],
             relief="flat", bd=0, highlightthickness=0,
             state="disabled" if (archived or trashed or searching) else "normal",
             command=lambda sv=sv, sub=st, ta=task: self._toggle_subtask(ta, sub, sv))
         sc.pack(side="left")
         self._subtask_check_registry[id(st)] = sc
-        sl = tk.Label(sf, text=st.get("text",""), bg=T["item_bg"],
+        sl = tk.Label(sf, text=st.get("text",""), bg=T["surface"],
             fg=T["muted"] if st.get("done") else T["text"],
             font=(self.cfg.get("ui_font","Segoe UI Variable"), 8,
                   "overstrike" if st.get("done") else "normal"),
@@ -4728,7 +4745,7 @@ class App:
                 font=(self.cfg.get("ui_font","Segoe UI Variable"), 8,
                       "overstrike" if done else "normal"))
             if chk and chk.winfo_exists():
-                chk.configure(selectcolor=T["check_done"] if done else T["item_bg"])
+                chk.configure(selectcolor=T["check_done"] if done else T["surface"])
         else:
             self._render_tasks()
 
@@ -4741,7 +4758,8 @@ class App:
         if not reg:
             self._render_tasks(); return
         pri = task["priority"]
-        pri_color = T.get(pri, T["separator"]) if pri != "none" else T["separator"]
+        # match _task_shell: no priority -> no visible rail
+        pri_color = T.get(pri, T["surface"]) if pri != "none" else T["surface"]
         # Update left colour bar
         try: reg["pri_bar"].configure(bg=pri_color)
         except Exception: pass
@@ -4755,7 +4773,7 @@ class App:
                 if pl and pl.winfo_exists():
                     pl.configure(text=f"· {pri.capitalize()}")
                 elif dr and dr.winfo_exists():
-                    pl = tk.Label(dr, text=f"· {pri.capitalize()}", bg=T["item_bg"],
+                    pl = tk.Label(dr, text=f"· {pri.capitalize()}", bg=T["surface"],
                                   fg=meta_fg, font=fn8)
                     pl.pack(side="left", padx=(6,0))
                     reg["pri_lbl"] = pl
@@ -4914,7 +4932,7 @@ class App:
             e=tk.Entry(p,textvariable=note_var,bg=self.T["entry_bg"],fg=self.T["entry_fg"],
                 insertbackground=self.T["entry_fg"],relief="flat",
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
-                highlightthickness=1,highlightbackground=self.T["separator"],highlightcolor=self.T["check_done"])
+                highlightthickness=1,highlightbackground=self.T["separator"],highlightcolor=self.T["focus"])
             e.pack(side="left",fill="x",expand=True,ipady=4)
             b=tk.Button(p,text="📄",bg=self.T["btn_bg"],fg=self.T["btn_fg"],relief="flat",
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9),padx=6,cursor="hand2",
@@ -4930,7 +4948,7 @@ class App:
             e=tk.Entry(p,textvariable=docs_path_var,bg=self.T["entry_bg"],fg=self.T["entry_fg"],
                 insertbackground=self.T["entry_fg"],relief="flat",
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),9),
-                highlightthickness=1,highlightbackground=self.T["separator"],highlightcolor=self.T["check_done"])
+                highlightthickness=1,highlightbackground=self.T["separator"],highlightcolor=self.T["focus"])
             e.pack(side="left",fill="x",expand=True,ipady=4)
             def _pick():
                 import tkinter.filedialog as fd
@@ -5649,10 +5667,13 @@ class App:
         Returns (outer, body, content). Pack the old `row` / `tw` into `content`.
         """
         T = self.T
-        outer, body = self._card(parent, rounded=False, hover=True)
+        # hover=False by design: `outer` IS the 1px border frame, and
+        # _card's hover would recolour it, erasing the card edge. The row's
+        # own paint() closure tints body/row/labels/buttons instead.
+        outer, body = self._card(parent, rounded=False, hover=False)
         outer.pack(fill="x", pady=self._px(2))
-        rail = T.get(priority, T["hairline"]) if priority != "none" else T["hairline"]
-        bar = tk.Frame(body, width=self._px(3), bg=rail)
+        rail = T.get(priority, T["surface"]) if priority != "none" else T["surface"]
+        bar = tk.Frame(body, width=self._px(4 if priority != "none" else 3), bg=rail)
         bar.pack(side="left", fill="y")
         content = tk.Frame(body, bg=T["surface"])
         content.pack(side="left", fill="both", expand=True)
@@ -5797,9 +5818,9 @@ class App:
             w.overrideredirect(True)
             w.attributes("-topmost", True)
             w.configure(bg=T["header_bg"])
-            f = tk.Frame(w, bg=T["item_bg"], padx=12, pady=8)
+            f = tk.Frame(w, bg=T["surface"], padx=12, pady=8)
             f.pack(padx=1, pady=1)
-            tk.Label(f, text="🔔  " + msg, bg=T["item_bg"], fg=T["text"],
+            tk.Label(f, text="🔔  " + msg, bg=T["surface"], fg=T["text"],
                 font=(self.cfg.get("ui_font", "Segoe UI Variable"), 9, "bold")).pack()
             w.update_idletasks()
             x = self.root.winfo_rootx() + max(0, self.root.winfo_width() - w.winfo_width() - 14)
@@ -6028,24 +6049,24 @@ class App:
         streak  = rec_streak(r, log, today)
         hits, tot = rec_rate(r, log, today, window=8)
 
-        card = tk.Frame(self.task_frame, bg=T["item_bg"], pady=5, padx=8)
+        card = tk.Frame(self.task_frame, bg=T["surface"], pady=5, padx=8)
         card.pack(fill="x", pady=2)
-        top = tk.Frame(card, bg=T["item_bg"]); top.pack(fill="x")
+        top = tk.Frame(card, bg=T["surface"]); top.pack(fill="x")
 
         pip = "🔥 %d" % streak if streak else "🔁"
-        tk.Label(top, text=pip, bg=T["item_bg"],
+        tk.Label(top, text=pip, bg=T["surface"],
             fg=(T["check_done"] if streak else T["muted"]),
             font=(fnt, 9, "bold"), width=5, anchor="w").pack(side="left")
 
-        title_wrap = tk.Frame(top, bg=T["item_bg"]); title_wrap.pack(side="left", fill="x", expand=True)
-        name = tk.Label(title_wrap, text=r.get("title", ""), bg=T["item_bg"],
+        title_wrap = tk.Frame(top, bg=T["surface"]); title_wrap.pack(side="left", fill="x", expand=True)
+        name = tk.Label(title_wrap, text=r.get("title", ""), bg=T["surface"],
             fg=(T["text"] if active else T["muted"]), font=(fnt, 10), anchor="w", justify="left")
         name.pack(anchor="w", fill="x")
         name.bind("<Double-Button-1>", lambda e, i=rid: self._rec_dialog(i))
 
         # right-hand buttons (packed right-to-left)
-        del_b = tk.Button(top, text="✕", bg=T["item_bg"], fg=T["muted"], relief="flat", bd=0,
-            padx=4, font=(fnt, 8), cursor="hand2", activebackground=T["item_hover"])
+        del_b = tk.Button(top, text="✕", bg=T["surface"], fg=T["muted"], relief="flat", bd=0,
+            padx=4, font=(fnt, 8), cursor="hand2", activebackground=T["surface_hover"])
         del_b._confirm = False
         def _del(b=del_b, i=rid):
             if not b._confirm:
@@ -6059,8 +6080,8 @@ class App:
         del_b.pack(side="right")
 
         tk.Button(top, text="⋯", command=lambda i=rid: self._rec_dialog(i),
-            bg=T["item_bg"], fg=T["muted"], relief="flat", bd=0, padx=4,
-            font=(fnt, 9), cursor="hand2", activebackground=T["item_hover"]).pack(side="right")
+            bg=T["surface"], fg=T["muted"], relief="flat", bd=0, padx=4,
+            font=(fnt, 9), cursor="hand2", activebackground=T["surface_hover"]).pack(side="right")
 
         if due_now:
             tk.Button(top, text="✓ Done", command=lambda i=rid: self._rec_mark_done(i),
@@ -6097,13 +6118,13 @@ class App:
         if sn and sn >= today and active:
             nxt, col = "snoozed → %s" % rec_fmt_date(sn + datetime.timedelta(days=1), today), T["medium"]
 
-        meta = tk.Frame(card, bg=T["item_bg"]); meta.pack(fill="x", pady=(1, 0))
-        tk.Label(meta, text="     " + rec_describe(r), bg=T["item_bg"], fg=T["muted"],
+        meta = tk.Frame(card, bg=T["surface"]); meta.pack(fill="x", pady=(1, 0))
+        tk.Label(meta, text="     " + rec_describe(r), bg=T["surface"], fg=T["muted"],
             font=(fnt, 8)).pack(side="left")
-        tk.Label(meta, text="  ·  " + nxt, bg=T["item_bg"], fg=col,
+        tk.Label(meta, text="  ·  " + nxt, bg=T["surface"], fg=col,
             font=(fnt, 8, "bold")).pack(side="left")
         if tot:
-            tk.Label(meta, text="%d/%d" % (hits, tot), bg=T["item_bg"], fg=T["muted"],
+            tk.Label(meta, text="%d/%d" % (hits, tot), bg=T["surface"], fg=T["muted"],
                 font=(fnt, 8)).pack(side="right")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -6226,12 +6247,12 @@ class App:
             def _tog(i=i):
                 day_state[i] = not day_state[i]
                 c = chips[i]
-                c.configure(bg=(T["check_done"] if day_state[i] else T["item_bg"]),
+                c.configure(bg=(T["check_done"] if day_state[i] else T["surface"]),
                             fg=("#ffffff" if day_state[i] else T["muted"]))
                 _refresh()
             c = tk.Button(wk_frame, text=nm, command=_tog, width=3, relief="flat",
                 font=(fnt, 8, "bold"), cursor="hand2", padx=2, pady=3,
-                bg=(T["check_done"] if day_state[i] else T["item_bg"]),
+                bg=(T["check_done"] if day_state[i] else T["surface"]),
                 fg=("#ffffff" if day_state[i] else T["muted"]),
                 activebackground=T["btn_hover"])
             c.pack(side="left", padx=1)
@@ -6856,7 +6877,7 @@ class App:
             bg=T["bg"], fg=T["muted"], relief="flat",
             font=(self.cfg.get("ui_font","Segoe UI Variable"),8),
             padx=8, pady=3, cursor="hand2",
-            activebackground=T["item_hover"])
+            activebackground=T["surface_hover"])
         _reset_btn.pack(pady=(0,10))
         _reset_btn._confirm = False
         _reset_btn_ref[0] = _reset_btn
