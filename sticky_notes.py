@@ -558,7 +558,7 @@ class App:
             bd=0,highlightthickness=1,
             highlightbackground=self.T["separator"],highlightcolor=self.T["check_done"])
         self.search_entry.pack(side="left",fill="x",expand=True,ipady=6,padx=(0,4))
-        self.search_entry.bind("<KeyRelease>", lambda e: self._render_tasks())
+        self.search_entry.bind("<KeyRelease>", lambda e: self._render_tasks_debounced(160))
         tk.Button(self.search_area,text="Clear",
             command=lambda:(self.search_var.set(""), self._render_tasks()),
             bg=self.T["btn_bg"],fg=self.T["btn_fg"],relief="flat",
@@ -2510,7 +2510,7 @@ class App:
         save_priorities(items)
         view = self.cfg.get("focus_view","list")
         if view != "list":
-            self.root.after(30, self._render_tasks)
+            self._render_tasks_debounced()
         else:
             self._render_priority_subtasks(sf, item, items, ibg, self.T)
 
@@ -2544,7 +2544,7 @@ class App:
             new = var.get().strip() or old
             item["title"] = new; save_priorities(items)
             if view != "list":
-                self.root.after(50, self._render_tasks)
+                self._render_tasks_debounced()
                 return
             try: e.destroy()
             except Exception: pass
@@ -2572,19 +2572,19 @@ class App:
                 if not old and not new:
                     item.get("subtasks",[]).remove(sub); save_priorities(items)
                     if view != "list":
-                        self.root.after(30, self._render_tasks); return
+                        self._render_tasks_debounced(); return
                     try: row.destroy()
                     except Exception: pass
                 else:
                     if view != "list":
-                        self.root.after(30, self._render_tasks); return
+                        self._render_tasks_debounced(); return
                     try: e.destroy()
                     except Exception: pass
                     lbl.configure(text=old or ""); lbl.pack(side="left", fill="x", expand=True)
                 return
             sub["text"] = new; save_priorities(items)
             if view != "list":
-                self.root.after(30, self._render_tasks)
+                self._render_tasks_debounced()
                 return
             try: e.destroy()
             except Exception: pass
@@ -4185,7 +4185,7 @@ class App:
 
         section("Obsidian (Optional)")
         note_var = tk.StringVar(value=self.cfg.get("obsidian_note_path",""))
-        note_var.trace_add("write", lambda *a:(self.cfg.__setitem__("obsidian_note_path",note_var.get().strip()),save_config(self.cfg)))
+        note_var.trace_add("write", lambda *a:(self.cfg.__setitem__("obsidian_note_path",note_var.get().strip()),self._save_cfg_debounced()))
         def note_row(p):
             e=tk.Entry(p,textvariable=note_var,bg=self.T["entry_bg"],fg=self.T["entry_fg"],
                 insertbackground=self.T["entry_fg"],relief="flat",
@@ -4201,7 +4201,7 @@ class App:
 
         section("Docs (Optional)")
         docs_path_var = tk.StringVar(value=self.cfg.get("docs_backup_path",""))
-        docs_path_var.trace_add("write", lambda *a:(self.cfg.__setitem__("docs_backup_path",docs_path_var.get().strip()),save_config(self.cfg)))
+        docs_path_var.trace_add("write", lambda *a:(self.cfg.__setitem__("docs_backup_path",docs_path_var.get().strip()),self._save_cfg_debounced()))
         def docs_path_row(p):
             e=tk.Entry(p,textvariable=docs_path_var,bg=self.T["entry_bg"],fg=self.T["entry_fg"],
                 insertbackground=self.T["entry_fg"],relief="flat",
@@ -4478,6 +4478,23 @@ class App:
         self.root.geometry(f"{nw}x{nh}+{nx}+{ny}")
 
     def _resize_stop(self, e): self._resize_edge=None; self._resize_start=None
+
+    # ── debounced work (coalesce bursts into one job) ─────────────────────────
+    def _save_cfg_debounced(self, delay=500):
+        """Settings entries fire trace_add on every keystroke - one write per pause."""
+        job = getattr(self, "_save_cfg_job", None)
+        if job:
+            try: self.root.after_cancel(job)
+            except Exception: pass
+        self._save_cfg_job = self.root.after(delay, lambda: save_config(self.cfg))
+
+    def _render_tasks_debounced(self, delay=30):
+        """Coalesce list rebuilds - search fires on every KeyRelease."""
+        job = getattr(self, "_render_job", None)
+        if job:
+            try: self.root.after_cancel(job)
+            except Exception: pass
+        self._render_job = self.root.after(delay, self._render_tasks)
 
     def _on_configure(self, e=None):
         if e and e.widget==self.root and not self._is_maximized:

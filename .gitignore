@@ -1,0 +1,19 @@
+# build output
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+*.manifest
+
+# local backups from optimization passes
+*.bak-preopt
+*.bak
+
+# 96 loose snapshot zips - superseded by git history
+*.zip
+
+# windows shortcuts
+*.lnk
