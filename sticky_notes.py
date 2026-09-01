@@ -1308,8 +1308,10 @@ class App:
         self._tab_reg    = {}
         self._tab_dirty  = set(self._ALL_TABS)
         self._current_frame_tab = None
+        self._mounted_tab = None
         self.task_frame = self._tab_frame(self.current_tab)
         self._cw = self.canvas.create_window((0,0),window=self.task_frame,anchor="nw")
+        self._mounted_tab = self.current_tab
         self._show_tab_frame(self.current_tab)
         self.canvas.bind("<Configure>",     lambda e: self.canvas.itemconfig(self._cw,width=e.width))
         for w in (self.canvas,):
@@ -1540,13 +1542,29 @@ class App:
         self._refresh_tabs()                # may flip archive <-> priorities
         name = self.current_tab             # honour that flip
         self.entry.configure(state="normal" if name == "active" else "disabled")
-        self._show_tab_frame(name)
+
         if name in self._tab_dirty or name in self._ALWAYS_FRESH:
+            # Build OFF-SCREEN, then swap. The previous tab stays on screen
+            # untouched for the whole build, so there is no empty frame and no
+            # progressive fill-in - the new tab appears complete, in one step.
+            self._bind_tab_context(name)
             self._render_tasks()            # clears the dirty flag
+            self._flush_pending_draws()     # bars/overlays that defer via after()
+            self._mount_tab_frame(name)
         else:
-            self._update_scroll()
+            self._show_tab_frame(name)
             self._refresh_status_bar()
+        self._update_scroll()
         self._restore_scroll(name)
+
+    def _flush_pending_draws(self):
+        """Run the after()-deferred painters (progress bars, button overlays,
+        grid relayout) BEFORE the frame is mounted, so they do not pop in one
+        frame late. Bounded: only already-queued idle work is drained."""
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
 
     def _update_scroll(self): self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     def _scroll(self, e):
@@ -5256,15 +5274,16 @@ class App:
                                getattr(self, "_subtask_label_registry", {}),
                                getattr(self, "_subtask_check_registry", {}))
 
-    def _show_tab_frame(self, name):
-        """Mount one tab's frame in the canvas window item. Rebinding
-        self.task_frame is what moves all nine render functions and _task_row
-        at once without editing any of them."""
+    def _bind_tab_context(self, name):
+        """Point task_frame + the per-tab registries at one tab WITHOUT making
+        it visible. The frame is a child of the canvas but is not the canvas
+        window item, so anything built into it here is invisible.
+
+        This is what makes a tab switch seamless: the old code mounted an EMPTY
+        frame and then filled it, so the user watched ~40 rows land one at a
+        time. Now the build happens off-screen and is swapped in atomically."""
         f = self._tab_frame(name)
-        if f is not getattr(self, "task_frame", None):
-            self.task_frame = f
-            try: self.canvas.itemconfigure(self._cw, window=f)
-            except Exception: pass
+        self.task_frame = f
         self._current_frame_tab = name
         # Registries are per-tab: _render_tasks resets them on every render
         # regardless of tab, so without this every in-place update
@@ -5273,6 +5292,21 @@ class App:
         self._task_widget_registry   = tw
         self._subtask_label_registry = sl
         self._subtask_check_registry = sc
+        return f
+
+    def _mount_tab_frame(self, name):
+        """Make one tab's frame the canvas window item - the single visible step."""
+        f = self._tab_frame(name)
+        if getattr(self, "_mounted_tab", None) != name or self.canvas.itemcget(self._cw, "window") == "":
+            try: self.canvas.itemconfigure(self._cw, window=f)
+            except Exception: pass
+            self._mounted_tab = name
+
+    def _show_tab_frame(self, name):
+        """Bind + mount in one step. Kept for callers that are already showing
+        content (the _render_tasks resync guard, _build_ui)."""
+        self._bind_tab_context(name)
+        self._mount_tab_frame(name)
 
     def _restore_scroll(self, name):
         """Re-apply this tab's remembered scroll offset, twice: once now and
