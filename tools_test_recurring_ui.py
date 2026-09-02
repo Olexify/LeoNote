@@ -29,6 +29,10 @@ def texts(w, out=None):
     return out
 
 app = sn.App(); app.root.update()
+# _rec_init schedules a catch-up via after(400). Drain it now so it cannot
+# race the assertions below (the temp recurring file is still empty, so this
+# is a no-op that just parks the quiet window; save_recurring clears it).
+app._rec_catch_up(render=False)
 
 # ---- 1. wiring exists ------------------------------------------------------
 check("_rec_init ran (badge state present)", hasattr(app, "_rec_pending"))
@@ -58,12 +62,15 @@ check("cadence is described in the UI",
       any("Weekly" in x or "Tu" in x for x in labels), labels[:14])
 
 # ---- 3. catch-up spawns a real task ----------------------------------------
-before = len(app.tasks)
+# NOTE: _rec_init's after(400) timer can fire during any update() above and do
+# the catch-up itself, so a before/after delta is racy. Assert the invariant
+# instead: exactly ONE task exists for this rule, whoever spawned it.
 app._rec_catch_up(render=True); app.root.update()
-after = len(app.tasks)
+rid = sn.load_recurring()["rules"][0]["id"]
+mine = [t for t in app.tasks if t.get("rec_id") == rid]
 spawned = [t for t in app.tasks if t.get("rec_id")]
-check("catch-up spawned exactly one task (not one per missed week)",
-      after - before == 1, "%d -> %d" % (before, after))
+check("catch-up produced exactly one task for the rule (not one per missed week)",
+      len(mine) == 1, len(mine))
 check("spawned task carries rec_id + rec_date for idempotency",
       spawned and spawned[0].get("rec_id") and spawned[0].get("rec_date"),
       spawned[:1])

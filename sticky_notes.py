@@ -1566,7 +1566,42 @@ class App:
         except Exception:
             pass
 
-    def _update_scroll(self): self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    def _update_scroll(self):
+        """Recompute the scrollregion and re-apply a pending scroll position.
+
+        Two traps, both of which made the list jump to the top on every
+        rename/toggle once rendering became double-buffered:
+          1. A freshly swapped buffer is not laid out yet - its bbox is ~1px
+             tall and yview() reads (0.0, 1.0), i.e. "everything fits".
+          2. yview works in FRACTIONS of the scrollregion, and that region
+             grows as the buffer lays out, so a fraction captured before the
+             rebuild points somewhere else after it.
+        So we remember pixels, wait for a region taller than the viewport, and
+        retry (driven by the frame's own <Configure>) until the pixel offset
+        actually sticks."""
+        try:
+            bb = self.canvas.bbox("all")
+            self.canvas.configure(scrollregion=bb)
+        except Exception:
+            return
+        px = getattr(self, "_pending_scroll_px", None)
+        if px is None or not bb:
+            return
+        try:
+            region_h = bb[3] - bb[1]
+            view_h   = self.canvas.winfo_height()
+            if region_h <= max(2, view_h):
+                return                       # not laid out yet - retry on <Configure>
+            target = min(px, max(0, region_h - view_h))
+            self.canvas.yview_moveto(float(target) / region_h)
+            # Clear only once we reached the position originally asked for.
+            # Comparing against the CLAMPED target would satisfy us during an
+            # intermediate layout, freezing the list near the top.
+            if self.canvas.canvasy(0) >= px - 2:
+                self._pending_scroll_px = None
+        except Exception:
+            self._pending_scroll_px = None
+
     def _scroll(self, e):
         if   getattr(e,"num",None)==4: d=-1
         elif getattr(e,"num",None)==5: d=1
@@ -1644,24 +1679,37 @@ class App:
         # into another tab's frame.
         if self._current_frame_tab != self.current_tab:
             self._stash_tab_state(self._current_frame_tab)
-            self._show_tab_frame(self.current_tab)
-        # Preserve scroll across in-tab re-renders (checkbox toggle, priority
-        # cycle, trash/recover). Every one of these used to jump to the top.
-        try: keep_off = self.canvas.yview()[0]
-        except Exception: keep_off = 0.0
+            self._bind_tab_context(self.current_tab)
+        # Preserve scroll across in-tab re-renders (rename, checkbox toggle,
+        # priority cycle, trash/recover). All of these used to jump to the top.
+        # Capture the scroll position in PIXELS. yview() is a fraction of the
+        # scrollregion, and the region changes size while the new buffer lays
+        # out, so a restored fraction lands somewhere else entirely.
+        try: keep_px = int(self.canvas.canvasy(0))
+        except Exception: keep_px = 0
         # _refresh_tabs (called below, AFTER the dispatch) can itself reassign
         # self.current_tab - archive<->priorities, or trash->active when the bin
         # empties. Book-keep against what we actually rendered, not against the
         # post-flip value, or we file this tab's registries under another tab's
         # name and mark that other tab clean while its frame is still empty.
         rendered = self.current_tab
+
+        # ── DOUBLE BUFFER ──────────────────────────────────────────────────
+        # Build into a brand-new off-screen frame and swap it in only when it
+        # is complete. Rebuilding the *mounted* frame in place is what made
+        # every rename / toggle / add / delete visibly repaint row by row -
+        # the "chunks loading" effect. The old frame stays on screen, fully
+        # intact, for the entire build.
+        old_frame = self._tab_frames.get(rendered)
+        buf = self._new_tab_frame(rendered)
+        self.task_frame = buf
+
         self._subtask_label_registry = {}
         self._subtask_check_registry = {}
         self._task_widget_registry   = {}   # id(task) -> {lbl, pri_bar, tw, ...}
-        # Keep this pack_propagate pair: it stops task_frame collapsing to zero
-        # height mid-rebuild.
-        self.task_frame.pack_propagate(False)
-        for w in self.task_frame.winfo_children(): w.destroy()
+        # Keep this pack_propagate pair: it stops the frame collapsing to zero
+        # height mid-build.
+        buf.pack_propagate(False)
         T = self.T
         if   rendered == "active":     self._render_active(T)
         elif rendered == "archive":    self._render_archive(T)
@@ -1673,7 +1721,18 @@ class App:
         elif rendered == "priorities": self._render_priorities(T)
         else:                          self._render_active(T)
         tk.Frame(self.task_frame, bg=T["bg"], height=60).pack(fill="x")
-        self.task_frame.pack_propagate(True)   # re-enable: single repaint
+        buf.pack_propagate(True)
+
+        # Swap, THEN destroy: the canvas must never point at a dead widget.
+        self._tab_frames[rendered] = buf
+        if getattr(self, "_mounted_tab", None) == rendered or old_frame is None:
+            try: self.canvas.itemconfigure(self._cw, window=buf)
+            except Exception: pass
+            self._mounted_tab = rendered
+        if old_frame is not None and old_frame is not buf:
+            try: old_frame.destroy()
+            except Exception: pass
+
         self._update_scroll()
         self._refresh_tabs()
         self._tab_dirty.discard(rendered)
@@ -1687,7 +1746,19 @@ class App:
             self._tab_dirty.add(self.current_tab)
             self._render_tasks_debounced(0)
         self._refresh_status_bar()
-        try: self.canvas.yview_moveto(keep_off)
+        # The buffer was only just swapped in, so Tk has not laid it out yet and
+        # the scrollregion is still the old one - a bare moveto() clamps to 0
+        # and the list jumps to the top on every rename/toggle. Apply now and
+        # again after the post-map relayout.
+        # Force the freshly-swapped buffer to lay out NOW, so the scrollregion
+        # is final before we restore the position. Chasing incremental
+        # <Configure> passes instead lands on an intermediate region and
+        # restores the wrong offset.
+        self._pending_scroll_px = keep_px if keep_px > 0 else None
+        try: self.canvas.update_idletasks()
+        except Exception: pass
+        self._update_scroll()
+        try: self.canvas.after_idle(self._update_scroll)
         except Exception: pass
 
     def _render_active(self, T):
@@ -4534,7 +4605,10 @@ class App:
     # ── Feature 5+7: inline edit task (multiline + click-outside submit) ─────
     def _inline_edit_task(self, parent, label, task):
         text_val = task.get("text","")
-        use_multi = len(text_val) > 60 or "\n" in text_val
+        # 60 chars was too high: a task that visibly wraps to several lines
+        # still got a one-line box. Anything with a newline, or long enough
+        # to wrap in the row, gets the real editor.
+        use_multi = len(text_val) > 40 or "\n" in text_val
         label.pack_forget()
         if use_multi:
             # Feature 5: multi-line text widget for long texts
@@ -4543,12 +4617,21 @@ class App:
                 bg=self.T["entry_bg"],fg=self.T["entry_fg"],
                 insertbackground=self.T["entry_fg"],relief="flat",
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10),
-                wrap="word",height=4,
+                wrap="word",height=1,
                 highlightthickness=1,
-                highlightbackground=self.T["check_done"],padx=2,pady=2)
+                highlightbackground=self.T["focus"],padx=2,pady=2)
             entry.pack(fill="x")
             entry.insert("1.0", text_val)
+            # grow to fit the text instead of a fixed 4 rows
+            entry.configure(height=max(3, min(12, text_val.count("\n") + 1
+                                              + len(text_val) // 46)))
             entry.focus_set()
+            # insert() leaves the cursor at 1.0, i.e. the START - which made it
+            # awkward to append to an existing note. Put it at the end.
+            entry.mark_set("insert", "end-1c")
+            entry.see("end")
+            entry.bind("<Control-a>", lambda e: (entry.tag_add("sel","1.0","end-1c"), "break")[1])
+            entry.bind("<Control-A>", lambda e: (entry.tag_add("sel","1.0","end-1c"), "break")[1])
             _finished = [False]
             def finish(save=True, _e=None):
                 if _finished[0]: return
@@ -4582,7 +4665,12 @@ class App:
                 font=(self.cfg.get("ui_font","Segoe UI Variable"),10))
             entry.insert(0, text_val)
             entry.pack(anchor="w",fill="x")
-            entry.focus_set(); entry.select_range(0,"end")
+            entry.focus_set()
+            # cursor at the end rather than select-all, so typing appends
+            # instead of wiping the text. Ctrl+A still selects everything.
+            entry.icursor("end"); entry.xview_moveto(1.0)
+            entry.bind("<Control-a>", lambda e: (entry.select_range(0,"end"), "break")[1])
+            entry.bind("<Control-A>", lambda e: (entry.select_range(0,"end"), "break")[1])
             _finished = [False]
             def finish(save=True, _e=None):
                 if _finished[0]: return
@@ -4610,37 +4698,92 @@ class App:
 
     # ── Feature 6+7: inline edit subtask ─────────────────────────────────────
     def _inline_edit_subtask(self, parent, label, task, subtask):
-        entry = tk.Entry(parent,
-            bg=self.T["entry_bg"],fg=self.T["entry_fg"],
-            insertbackground=self.T["entry_fg"],relief="flat",
-            font=(self.cfg.get("ui_font","Segoe UI Variable"),8))
-        entry._subtask_ref = subtask  # tag for flush lookup
-        entry.insert(0, subtask.get("text",""))
-        label.pack_forget(); entry.pack(side="left",fill="x",expand=True)
-        entry.focus_set(); entry.select_range(0,"end")
+        """Same editor as tasks: multi-line when the text warrants it, cursor
+        at the end. Was always a one-line Entry with select-all, so a long or
+        multi-line subtask could not be edited sensibly and the first keystroke
+        wiped it."""
+        text_val = subtask.get("text", "")
+        use_multi = len(text_val) > 40 or "\n" in text_val
+        label.pack_forget()
         _finished = [False]
-        def finish(save=True, _e=None):
-            if _finished[0]: return
-            _finished[0] = True
-            new = entry.get().strip()
-            try: entry.destroy()
-            except Exception: pass
-            if save and new:
-                subtask["text"]=new; subtask.pop("_editing",None)
+
+        def commit(new):
+            """Shared tail: persist, then update in place if we can."""
+            if new:
+                subtask["text"] = new
+                subtask.pop("_editing", None)
                 save_tasks(self.tasks)
-                np = self.cfg.get("obsidian_note_path","").strip()
-                if np: sync_note(np,task)
-            elif not new:
-                try: task.get("subtasks",[]).remove(subtask)
+                np = self.cfg.get("obsidian_note_path", "").strip()
+                if np: sync_note(np, task)
+                sl = getattr(self, "_subtask_label_registry", {}).get(id(subtask))
+                if sl is not None and sl.winfo_exists():
+                    sl.configure(text=new)
+                    sl.pack(side="left", fill="x", expand=True)
+                    return
+            else:
+                try: task.get("subtasks", []).remove(subtask)
                 except ValueError: pass
                 save_tasks(self.tasks)
             self._render_tasks()
-        entry.bind("<Return>",   lambda e: finish(True))
-        entry.bind("<Escape>",   lambda e: finish(False))
-        # Feature 7: click outside submits
-        entry.bind("<FocusOut>", lambda e: self.root.after(80,lambda: finish(True)))
 
-    # ── add task ──────────────────────────────────────────────────────────────
+        if use_multi:
+            ef = tk.Frame(parent, bg=self.T["entry_bg"])
+            ef.pack(side="left", fill="x", expand=True)
+            entry = tk.Text(ef,
+                bg=self.T["entry_bg"], fg=self.T["entry_fg"],
+                insertbackground=self.T["entry_fg"], relief="flat",
+                font=(self.cfg.get("ui_font", "Segoe UI Variable"), 8),
+                wrap="word", height=1,
+                highlightthickness=1, highlightbackground=self.T["focus"],
+                padx=2, pady=2)
+            entry.pack(fill="x")
+            entry._subtask_ref = subtask          # tag for flush lookup
+            entry.insert("1.0", text_val)
+            entry.configure(height=max(2, min(10, text_val.count("\n") + 1
+                                              + len(text_val) // 46)))
+            entry.focus_set()
+            entry.mark_set("insert", "end-1c")
+            entry.see("end")
+            entry.bind("<Control-a>", lambda e: (entry.tag_add("sel","1.0","end-1c"), "break")[1])
+            entry.bind("<Control-A>", lambda e: (entry.tag_add("sel","1.0","end-1c"), "break")[1])
+
+            def finish(save=True, _e=None):
+                if _finished[0]: return
+                _finished[0] = True
+                new = entry.get("1.0", "end-1c").strip() if save else text_val
+                try: ef.destroy()
+                except Exception: pass
+                commit(new)
+
+            # Enter inserts a newline here; Ctrl+Enter commits, like the task editor
+            entry.bind("<Control-Return>", lambda e: finish(True))
+            entry.bind("<Escape>",         lambda e: finish(False))
+            entry.bind("<FocusOut>",       lambda e: self.root.after(80, lambda: finish(True)))
+        else:
+            entry = tk.Entry(parent,
+                bg=self.T["entry_bg"], fg=self.T["entry_fg"],
+                insertbackground=self.T["entry_fg"], relief="flat",
+                font=(self.cfg.get("ui_font", "Segoe UI Variable"), 8))
+            entry._subtask_ref = subtask
+            entry.insert(0, text_val)
+            entry.pack(side="left", fill="x", expand=True)
+            entry.focus_set()
+            entry.icursor("end"); entry.xview_moveto(1.0)
+            entry.bind("<Control-a>", lambda e: (entry.select_range(0,"end"), "break")[1])
+            entry.bind("<Control-A>", lambda e: (entry.select_range(0,"end"), "break")[1])
+
+            def finish(save=True, _e=None):
+                if _finished[0]: return
+                _finished[0] = True
+                new = entry.get().strip() if save else text_val
+                try: entry.destroy()
+                except Exception: pass
+                commit(new)
+
+            entry.bind("<Return>",   lambda e: finish(True))
+            entry.bind("<Escape>",   lambda e: finish(False))
+            entry.bind("<FocusOut>", lambda e: self.root.after(80, lambda: finish(True)))
+
     def _add_task(self, e=None):
         text = self.entry_var.get().strip()
         if not text: return
@@ -5281,6 +5424,16 @@ class App:
         f.bind("<Control-MouseWheel>", self._ctrl_scroll)
         self._tab_frames[name] = f
         self._tab_dirty.add(name)
+        return f
+
+    def _new_tab_frame(self, name):
+        """A brand-new, UNMAPPED frame carrying the same bindings _tab_frame
+        gives a cached one. The caller swaps it in once it is fully built."""
+        f = tk.Frame(self.canvas, bg=self.T["bg"])
+        f.bind("<Configure>", lambda e: self._update_scroll())
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            f.bind(seq, self._scroll)
+        f.bind("<Control-MouseWheel>", self._ctrl_scroll)
         return f
 
     def _stash_tab_state(self, name):
